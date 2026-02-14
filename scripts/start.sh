@@ -26,7 +26,7 @@ fi
 GITHUB_BRANCH="${GITHUB_BRANCH:-main}"
 BACKUP_INTERVAL="${BACKUP_INTERVAL:-120}"
 N8N_DIR="/home/node/.n8n"
-BACKUP_DIR="/n8n-backup"
+BACKUP_DIR="/backup-data"
 REPO_URL="https://${GITHUB_TOKEN}@github.com/${GITHUB_REPO_OWNER}/${GITHUB_REPO_NAME}.git"
 
 echo "📋 الإعدادات:"
@@ -50,7 +50,7 @@ git config --global init.defaultBranch "$GITHUB_BRANCH"
 echo ""
 echo "📥 جاري استعادة البيانات من GitHub..."
 
-cd /n8n-backup
+cd /backup-data
 
 # محاولة استنساخ الريبو
 if git clone --branch "$GITHUB_BRANCH" --single-branch "$REPO_URL" repo 2>/dev/null; then
@@ -132,7 +132,7 @@ else
     git commit -m "🆕 تهيئة ريبو التخزين"
     git remote add origin "$REPO_URL"
     git push -u origin "$GITHUB_BRANCH" 2>/dev/null || true
-    cd /n8n-backup
+    cd /backup-data
 fi
 
 # ============================================
@@ -149,7 +149,7 @@ echo "⏰ بدء النسخ الاحتياطي التلقائي (كل ${BACKUP_I
     
     while true; do
         sleep "$BACKUP_INTERVAL"
-        /backup-scripts/backup.sh 2>&1 | while read line; do
+        /scripts/backup.sh 2>&1 | while read line; do
             echo "[BACKUP] $line"
         done
     done
@@ -162,7 +162,7 @@ cleanup() {
     echo ""
     echo "🛑 جاري الإغلاق..."
     echo "💾 حفظ أخير للبيانات..."
-    /backup-scripts/backup.sh
+    /scripts/backup.sh
     echo "✅ تم الحفظ. وداعاً!"
     exit 0
 }
