@@ -2,14 +2,18 @@ FROM docker.n8n.io/n8nio/n8n:2.3.6
 
 USER root
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    git \
-    bash \
-    curl \
-    jq \
-    tar \
-    gzip \
-    && rm -rf /var/lib/apt/lists/*
+# Try all package managers
+RUN if command -v apk > /dev/null; then \
+        apk add --no-cache git bash curl jq tar gzip; \
+    elif command -v apt-get > /dev/null; then \
+        apt-get update && apt-get install -y git bash curl jq tar gzip && rm -rf /var/lib/apt/lists/*; \
+    elif command -v dnf > /dev/null; then \
+        dnf install -y git bash curl jq tar gzip; \
+    elif command -v yum > /dev/null; then \
+        yum install -y git bash curl jq tar gzip; \
+    elif command -v microdnf > /dev/null; then \
+        microdnf install -y git bash curl jq tar gzip; \
+    fi
 
 RUN mkdir -p /scripts /backup-data /home/node/.n8n
 
