@@ -4,6 +4,7 @@ set -e
 echo ""
 echo "========================================="
 echo "  n8n + GitHub Permanent Storage"
+echo "  INSTANT SAVE MODE"
 echo "========================================="
 echo ""
 
@@ -20,7 +21,6 @@ REPO_URL="https://${GITHUB_TOKEN}@github.com/${GITHUB_REPO_OWNER}/${GITHUB_REPO_
 
 echo "Owner: $GITHUB_REPO_OWNER"
 echo "Repo: $GITHUB_REPO_NAME"
-echo "Branch: $GITHUB_BRANCH"
 echo ""
 
 git config --global user.email "n8n-bot@automated.com"
@@ -38,35 +38,28 @@ if git clone --branch "$GITHUB_BRANCH" --single-branch --depth 1 "$REPO_URL" rep
     if [ -d "repo/n8n-data" ]; then
         echo "Found saved data! Restoring..."
 
-        # Restore EVERYTHING back to .n8n
         cp -r repo/n8n-data/* "$N8N_DIR/" 2>/dev/null || true
         cp repo/n8n-data/.* "$N8N_DIR/" 2>/dev/null || true
 
-        # Handle compressed database
         if [ -f "$N8N_DIR/database.sqlite.gz" ] && [ ! -f "$N8N_DIR/database.sqlite" ]; then
             gunzip -f "$N8N_DIR/database.sqlite.gz"
             echo "   OK: database (decompressed)"
         fi
 
-        # Remove files that shouldn't be in .n8n
         rm -f "$N8N_DIR/stats.json" 2>/dev/null
         rm -f "$N8N_DIR/env_encryption_key.txt" 2>/dev/null
         rm -rf "$N8N_DIR/exported-workflows" 2>/dev/null
 
-        echo ""
         echo "Restore complete!"
+        echo "Files:"
+        ls -la "$N8N_DIR/" 2>/dev/null | head -15
+        echo ""
 
-        # Show stats
         if [ -f "repo/n8n-data/stats.json" ]; then
             echo "Last backup:"
             cat repo/n8n-data/stats.json
             echo ""
         fi
-
-        # Show what was restored
-        echo "Files restored:"
-        ls -la "$N8N_DIR/" 2>/dev/null | head -20
-        echo ""
     else
         echo "First run - no data yet"
     fi
@@ -85,11 +78,43 @@ else
     cd "$WORK"
 fi
 
-echo "Auto backup every ${BACKUP_INTERVAL} seconds"
+# ============================================
+# INSTANT SAVE: Monitor database changes
+# Save to GitHub when database changes
+# ============================================
+echo "Starting INSTANT save monitor..."
 
 (
+    sleep 30
+    echo "Instant save monitor active"
+
+    # Save hash of database to detect changes
+    LAST_HASH=""
+
+    while true; do
+        sleep 10
+
+        if [ -f "$N8N_DIR/database.sqlite" ]; then
+            # Get current hash
+            CURRENT_HASH=$(md5sum "$N8N_DIR/database.sqlite" 2>/dev/null | cut -d' ' -f1 || echo "none")
+
+            if [ "$CURRENT_HASH" != "$LAST_HASH" ] && [ "$CURRENT_HASH" != "none" ]; then
+                echo "[INSTANT] Database changed! Saving..."
+                /scripts/backup.sh 2>&1 | while IFS= read -r line; do
+                    echo "[INSTANT] $line"
+                done
+                LAST_HASH="$CURRENT_HASH"
+            fi
+        fi
+    done
+) &
+
+# ============================================
+# Regular backup every BACKUP_INTERVAL
+# ============================================
+(
     sleep 60
-    echo "Backup system active"
+    echo "Regular backup active (every ${BACKUP_INTERVAL}s)"
     while true; do
         sleep "$BACKUP_INTERVAL"
         /scripts/backup.sh 2>&1 | while IFS= read -r line; do
@@ -110,6 +135,8 @@ trap cleanup SIGTERM SIGINT SIGQUIT
 echo ""
 echo "========================================="
 echo "  Starting n8n..."
+echo "  Database monitor: every 10 seconds"
+echo "  Full backup: every ${BACKUP_INTERVAL} seconds"
 echo "========================================="
 echo ""
 
