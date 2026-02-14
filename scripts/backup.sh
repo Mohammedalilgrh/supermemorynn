@@ -163,6 +163,37 @@ if [ -d "$N8N_DIR/nodes" ]; then
     echo "   ✅ Nodes مخصصة"
 fi
 
+#######################################################################
+# أضف هذا في backup.sh
+# ============================================
+# تنظيف السجل القديم لتوفير المساحة
+# ============================================
+clean_git_history() {
+    echo "🧹 تنظيف سجل Git القديم..."
+    
+    cd "$REPO_DIR"
+    
+    # حجم الريبو الحالي
+    REPO_SIZE=$(du -sm .git | cut -f1)
+    echo "   حجم .git: ${REPO_SIZE}MB"
+    
+    # إذا أكثر من 3GB، ننظف
+    if [ "$REPO_SIZE" -gt 3000 ]; then
+        echo "   ⚠️ الريبو كبير، جاري التنظيف..."
+        
+        # نخلي commit واحد بس (آخر نسخة)
+        git checkout --orphan temp_branch
+        git add -A
+        git commit -m "🧹 تنظيف - $(date)"
+        git branch -D "$GITHUB_BRANCH"
+        git branch -m "$GITHUB_BRANCH"
+        git gc --aggressive --prune=all
+        git push -f origin "$GITHUB_BRANCH"
+        
+        NEW_SIZE=$(du -sm .git | cut -f1)
+        echo "   ✅ تم التنظيف: ${REPO_SIZE}MB → ${NEW_SIZE}MB"
+    fi
+}
 # ============================================
 # إحصائيات
 # ============================================
