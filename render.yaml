@@ -1,11 +1,10 @@
 services:
   - type: web
-    name: n8n-persistent
+    name: supermemorynn
     runtime: docker
     dockerfilePath: ./Dockerfile
     plan: free
     envVars:
-      # GitHub للتخزين الدائم
       - key: GITHUB_TOKEN
         sync: false
       - key: GITHUB_REPO_OWNER
@@ -16,8 +15,6 @@ services:
         value: main
       - key: BACKUP_INTERVAL
         value: "120"
-
-      # إعدادات n8n
       - key: N8N_PORT
         value: "5678"
       - key: PORT
@@ -38,9 +35,5 @@ services:
         sync: false
       - key: GENERIC_TIMEZONE
         value: "Asia/Baghdad"
-      - key: N8N_DEFAULT_BINARY_DATA_MODE
-        value: "filesystem"
       - key: N8N_DIAGNOSTICS_ENABLED
-        value: "false"
-      - key: N8N_HIRING_BANNER_ENABLED
         value: "false"
