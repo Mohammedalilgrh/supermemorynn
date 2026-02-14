@@ -2,7 +2,14 @@ FROM docker.n8n.io/n8nio/n8n:2.3.6
 
 USER root
 
-RUN apk add --no-cache git bash curl jq tar gzip
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    bash \
+    curl \
+    jq \
+    tar \
+    gzip \
+    && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /scripts /backup-data /home/node/.n8n
 
