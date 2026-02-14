@@ -72,7 +72,7 @@ if git clone --branch "$GITHUB_BRANCH" --single-branch "$REPO_URL" repo 2>/dev/n
             echo "   ✅ الإعدادات"
         fi
         
-        # استعادة المفاتيح
+                # استعادة المفاتيح
         if [ -f "repo/n8n-data/.n8n-encryption-key" ]; then
             cp "repo/n8n-data/.n8n-encryption-key" "$N8N_DIR/"
             echo "   ✅ مفتاح التشفير"
@@ -82,6 +82,19 @@ if git clone --branch "$GITHUB_BRANCH" --single-branch "$REPO_URL" repo 2>/dev/n
             cp "repo/n8n-data/encryptionKey" "$N8N_DIR/"
             echo "   ✅ مفتاح التشفير (2)"
         fi
+
+        if [ -f "repo/n8n-data/.encryptionKey" ]; then
+            cp "repo/n8n-data/.encryptionKey" "$N8N_DIR/"
+            echo "   ✅ مفتاح التشفير (3)"
+        fi
+
+        # استعادة كل الملفات المخفية
+        for f in repo/n8n-data/.*; do
+            if [ -f "$f" ] && [ "$(basename $f)" != "." ] && [ "$(basename $f)" != ".." ]; then
+                cp "$f" "$N8N_DIR/"
+                echo "   ✅ $(basename $f)"
+            fi
+        done
         
         # استعادة الـ credentials
         if [ -d "repo/n8n-data/credentials" ]; then
