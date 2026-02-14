@@ -87,12 +87,24 @@ fi
 # ============================================
 # نسخ مفاتيح التشفير (مهم جداً!)
 # ============================================
-for keyfile in ".n8n-encryption-key" "encryptionKey"; do
+for keyfile in ".n8n-encryption-key" "encryptionKey" ".encryptionKey"; do
     if [ -f "$N8N_DIR/$keyfile" ]; then
         cp "$N8N_DIR/$keyfile" "$DATA_DIR/"
         echo "   ✅ مفتاح التشفير: $keyfile"
     fi
 done
+
+# نسخ كل الملفات المخفية المهمة
+find "$N8N_DIR" -maxdepth 1 -name ".*" -type f | while read f; do
+    cp "$f" "$DATA_DIR/"
+    echo "   ✅ $(basename $f)"
+done
+
+# حفظ مفتاح التشفير من البيئة
+if [ ! -z "$N8N_ENCRYPTION_KEY" ]; then
+    echo "$N8N_ENCRYPTION_KEY" > "$DATA_DIR/encryption_key_env.txt"
+    echo "   ✅ مفتاح التشفير (من ENV)"
+fi
 
 # ============================================
 # نسخ ملف الإعدادات
