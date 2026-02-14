@@ -1,10 +1,31 @@
-FROM python:3.11-slim
+FROM n8nio/n8n:latest
 
-WORKDIR /app
+USER root
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# تثبيت الأدوات المطلوبة
+RUN apk add --no-cache \
+    git \
+    bash \
+    curl \
+    jq \
+    openssh-client \
+    tar \
+    gzip
 
-COPY . .
+# إنشاء مجلدات العمل
+RUN mkdir -p /backup-scripts /n8n-backup /home/node/.n8n
 
-CMD ["python", "bot.py"]
+# نسخ السكربتات
+COPY scripts/start.sh /backup-scripts/start.sh
+COPY scripts/backup.sh /backup-scripts/backup.sh
+COPY scripts/restore.sh /backup-scripts/restore.sh
+
+# صلاحيات التشغيل
+RUN chmod +x /backup-scripts/*.sh
+RUN chown -R node:node /home/node/.n8n /backup-scripts /n8n-backup
+
+USER node
+
+WORKDIR /home/node
+
+ENTRYPOINT ["/backup-scripts/start.sh"]
