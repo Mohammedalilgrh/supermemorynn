@@ -1,11 +1,11 @@
 services:
-  - type: worker
-    name: my-bot
+  - type: web
+    name: n8n-persistent
     runtime: docker
     dockerfilePath: ./Dockerfile
+    plan: free
     envVars:
-      - key: BOT_TOKEN
-        sync: false
+      # GitHub للتخزين الدائم
       - key: GITHUB_TOKEN
         sync: false
       - key: GITHUB_REPO_OWNER
@@ -14,3 +14,33 @@ services:
         sync: false
       - key: GITHUB_BRANCH
         value: main
+      - key: BACKUP_INTERVAL
+        value: "120"
+
+      # إعدادات n8n
+      - key: N8N_PORT
+        value: "5678"
+      - key: PORT
+        value: "5678"
+      - key: N8N_PROTOCOL
+        value: "https"
+      - key: N8N_HOST
+        sync: false
+      - key: WEBHOOK_URL
+        sync: false
+      - key: N8N_ENCRYPTION_KEY
+        sync: false
+      - key: N8N_BASIC_AUTH_ACTIVE
+        value: "true"
+      - key: N8N_BASIC_AUTH_USER
+        sync: false
+      - key: N8N_BASIC_AUTH_PASSWORD
+        sync: false
+      - key: GENERIC_TIMEZONE
+        value: "Asia/Baghdad"
+      - key: N8N_DEFAULT_BINARY_DATA_MODE
+        value: "filesystem"
+      - key: N8N_DIAGNOSTICS_ENABLED
+        value: "false"
+      - key: N8N_HIRING_BANNER_ENABLED
+        value: "false"
