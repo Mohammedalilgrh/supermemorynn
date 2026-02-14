@@ -6,7 +6,7 @@
 
 GITHUB_BRANCH="${GITHUB_BRANCH:-main}"
 N8N_DIR="/home/node/.n8n"
-BACKUP_DIR="/n8n-backup"
+BACKUP_DIR="/backup-data"
 REPO_DIR="$BACKUP_DIR/repo"
 REPO_URL="https://${GITHUB_TOKEN}@github.com/${GITHUB_REPO_OWNER}/${GITHUB_REPO_NAME}.git"
 TIMESTAMP=$(date +"%Y-%m-%d %H:%M:%S")
@@ -163,8 +163,6 @@ if [ -d "$N8N_DIR/nodes" ]; then
     echo "   ✅ Nodes مخصصة"
 fi
 
-#######################################################################
-# أضف هذا في backup.sh
 # ============================================
 # تنظيف السجل القديم لتوفير المساحة
 # ============================================
@@ -194,6 +192,10 @@ clean_git_history() {
         echo "   ✅ تم التنظيف: ${REPO_SIZE}MB → ${NEW_SIZE}MB"
     fi
 }
+
+# استدعاء دالة التنظيف
+clean_git_history
+
 # ============================================
 # إحصائيات
 # ============================================
