@@ -2,10 +2,6 @@
 set -eu
 umask 077
 
-# ============================================================
-# restore.sh - Ultra-robust restore with fallback
-# ============================================================
-
 : "${GITHUB_TOKEN:?Set GITHUB_TOKEN}"
 : "${GITHUB_REPO_OWNER:?Set GITHUB_REPO_OWNER}"
 : "${GITHUB_REPO_NAME:?Set GITHUB_REPO_NAME}"
@@ -58,12 +54,10 @@ need_cmd xargs
 need_cmd stat
 need_cmd tail
 need_cmd sha256sum
-need_cmd grep
 need_cmd find
 
 mkdir -p "$WORK" "$N8N_DIR"
 
-# ── Git clone with retry ──
 git_clone_retry() {
   url="$1"; branch="$2"; dest="$3"; depth="${4:-1}"
   rm -rf "$dest" 2>/dev/null || true
@@ -78,7 +72,6 @@ git_clone_retry() {
   return 1
 }
 
-# ── Preserve existing data ──
 preserve_local_dir_if_needed() {
   if [ "$PRESERVE_LOCAL" = "true" ] && [ -d "$N8N_DIR" ] && \
      [ "$(ls -A "$N8N_DIR" 2>/dev/null || true)" != "" ]; then
@@ -88,7 +81,6 @@ preserve_local_dir_if_needed() {
   fi
 }
 
-# ── SQLite integrity check ──
 sqlite_integrity_ok() {
   db="$1"
   [ -f "$db" ] || return 1
@@ -96,7 +88,6 @@ sqlite_integrity_ok() {
     | awk 'NR==1{print}' | grep -q "^ok$"
 }
 
-# ── SHA256 verification ──
 verify_sha256_if_present() {
   dir="$1"
   [ "$VERIFY_SHA256" = "true" ] || return 0
@@ -106,54 +97,44 @@ verify_sha256_if_present() {
   return 0
 }
 
-# ── Restore from backup tree ──
 restore_from_backup_tree() {
   bdir="$1"
 
-  # 1) Restore files archive
   if ls "$bdir"/n8n-data/files.tar.gz.part_* >/dev/null 2>&1; then
     cat "$bdir"/n8n-data/files.tar.gz.part_* \
       | gzip -dc \
       | tar -C "$N8N_DIR" -xf -
   fi
 
-  # Clean WAL/SHM before DB restore
   rm -f "$N8N_DIR/database.sqlite" \
         "$N8N_DIR/database.sqlite-wal" \
         "$N8N_DIR/database.sqlite-shm" 2>/dev/null || true
 
-  # 2) Restore DB (gzipped SQL parts)
   if ls "$bdir"/n8n-data/db.sql.gz.part_* >/dev/null 2>&1; then
     ls -1 "$bdir"/n8n-data/db.sql.gz.part_* 2>/dev/null \
       | sort | xargs cat \
       | gzip -dc \
       | sqlite3 "$N8N_DIR/database.sqlite"
   elif ls "$bdir"/n8n-data/db.sql.part_* >/dev/null 2>&1; then
-    # Legacy: uncompressed SQL parts
     ls -1 "$bdir"/n8n-data/db.sql.part_* 2>/dev/null \
       | sort | xargs cat \
       | sqlite3 "$N8N_DIR/database.sqlite"
   else
-    echo "ERROR: No DB format found in backup" >&2
+    echo "ERROR: No DB format found" >&2
     return 1
   fi
 
-  # 3) Integrity check
   sqlite_integrity_ok "$N8N_DIR/database.sqlite" || {
     echo "ERROR: SQLite integrity check failed" >&2
     return 1
   }
 
-  # 4) Permissions
   chmod 700 "$N8N_DIR" 2>/dev/null || true
   chmod 600 "$N8N_DIR/database.sqlite" 2>/dev/null || true
-  chmod 600 "$N8N_DIR/.n8n-encryption-key" 2>/dev/null || true
-  chmod 600 "$N8N_DIR/encryptionKey" 2>/dev/null || true
 
   return 0
 }
 
-# ── Restore one backup ──
 restore_one() {
   repo="$1"; branch="$2"
   VOL_URL="https://${TOKEN}@github.com/${OWNER}/${repo}.git"
@@ -181,17 +162,11 @@ restore_one() {
   restore_from_backup_tree "$TMP_BKP"
 }
 
-# ============================================================
-# MAIN
-# ============================================================
-
-# Skip if local DB exists (unless forced)
 if [ "$FORCE_RESTORE" != "true" ] && [ -s "$N8N_DIR/database.sqlite" ]; then
   echo "Local database exists - skipping restore"
   exit 0
 fi
 
-# Explicit restore target
 if [ -n "$RESTORE_REPO" ] && [ -n "$RESTORE_BRANCH" ]; then
   if restore_one "$RESTORE_REPO" "$RESTORE_BRANCH"; then
     echo "Explicit restore successful"
@@ -201,7 +176,6 @@ if [ -n "$RESTORE_REPO" ] && [ -n "$RESTORE_BRANCH" ]; then
   exit 1
 fi
 
-# Auto restore from base repo meta
 echo "Fetching restore info from: ${OWNER}/${BASE_REPO}"
 
 git_clone_retry "$BASE_URL" "$GITHUB_BRANCH" "$TMP_BASE" 1 || {
@@ -242,7 +216,7 @@ RESTORED_TS=$ts
 RESTORED_REPO=$repo
 RESTORED_BRANCH=$branch
 EOF
-    echo "Restored successfully from: $repo/$branch"
+    echo "Restored from: $repo/$branch"
     break
   fi
 done < "$CANDIDATES"
