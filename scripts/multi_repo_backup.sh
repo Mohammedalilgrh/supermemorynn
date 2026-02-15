@@ -2,11 +2,6 @@
 set -eu
 umask 077
 
-# ============================================================
-# multi_repo_backup.sh
-# Append-only backups with auto volume rotation
-# ============================================================
-
 BASE_REPO="${GITHUB_REPO_NAME:?missing GITHUB_REPO_NAME}"
 OWNER="${GITHUB_REPO_OWNER:?missing GITHUB_REPO_OWNER}"
 TOKEN="${GITHUB_TOKEN:?missing GITHUB_TOKEN}"
@@ -21,7 +16,7 @@ REPO_SIZE_MARGIN_MB="${REPO_SIZE_MARGIN_MB:-300}"
 CHUNK_SIZE="${CHUNK_SIZE:-40M}"
 GZIP_LEVEL="${GZIP_LEVEL:-1}"
 
-MIN_BACKUP_INTERVAL_SEC="${MIN_BACKUP_INTERVAL_SEC:-300}"
+MIN_BACKUP_INTERVAL_SEC="${MIN_BACKUP_INTERVAL_SEC:-30}"
 FORCE_BACKUP_EVERY_SEC="${FORCE_BACKUP_EVERY_SEC:-86400}"
 
 BACKUP_BINARYDATA="${BACKUP_BINARYDATA:-false}"
@@ -42,7 +37,6 @@ META_HISTORY="$META_DIR/history.log"
 
 mkdir -p "$WORK"
 
-# ── Dependencies ──
 need_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "Missing: $1" >&2; exit 1; }; }
 need_cmd git
 need_cmd curl
@@ -59,13 +53,11 @@ need_cmd xargs
 need_cmd sha256sum
 need_cmd find
 
-# ── Lock (prevent parallel runs) ──
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
   exit 0
 fi
 trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
 
-# ── Helpers ──
 now_epoch() { date +%s; }
 utc_ts() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
 backup_id() { date +"%Y-%m-%d_%H-%M-%S"; }
@@ -100,8 +92,8 @@ get_repo_size_mb() {
 }
 
 git_ident() {
-  git config user.email >/dev/null 2>&1 || git config user.email "backup@local"
-  git config user.name  >/dev/null 2>&1 || git config user.name  "n8n-backup-bot"
+  git config --global user.email "backup@local" 2>/dev/null || true
+  git config --global user.name "n8n-backup-bot" 2>/dev/null || true
 }
 
 git_prepare_main() {
@@ -150,7 +142,6 @@ read_pointer_from_base() {
   )
 }
 
-# ── Change detection ──
 db_sig() {
   db="$N8N_DIR/database.sqlite"
   wal="$N8N_DIR/database.sqlite-wal"
@@ -188,17 +179,14 @@ should_backup() {
   cur_db="$(db_sig)"
   cur_bin="$(bin_sig)"
 
-  # Force backup every 24h
   if [ $((now - last_force)) -ge "$FORCE_BACKUP_EVERY_SEC" ]; then
     echo "FORCE"; return
   fi
 
-  # No changes
   if [ "$cur_db" = "$last_db" ] && [ "$cur_bin" = "$last_bin" ]; then
     echo "NOCHANGE"; return
   fi
 
-  # Too soon (cooldown)
   if [ $((now - last_epoch)) -lt "$MIN_BACKUP_INTERVAL_SEC" ]; then
     echo "COOLDOWN"; return
   fi
@@ -265,11 +253,9 @@ ID="$(backup_id)"
 TS="$(utc_ts)"
 BACKUP_BRANCH="backup/$ID"
 
-# Ensure base repo exists
 ensure_repo "$BASE_REPO"
 BASE_URL="https://${TOKEN}@github.com/${OWNER}/${BASE_REPO}.git"
 
-# Find current volume repo
 tmp_ptr="$WORK/_tmp_ptr"
 ptr_repo="$(read_pointer_from_base "$BASE_URL" "$tmp_ptr" 2>/dev/null || true)"
 rm -rf "$tmp_ptr" 2>/dev/null || true
@@ -278,7 +264,6 @@ CURRENT_VOL="$ptr_repo"
 [ -n "$CURRENT_VOL" ] || CURRENT_VOL="$(default_volume_repo)"
 ensure_repo "$CURRENT_VOL"
 
-# Rotate if volume is near full
 size_mb="$(get_repo_size_mb "$CURRENT_VOL" || echo 0)"
 threshold=$((MAX_REPO_SIZE_MB - REPO_SIZE_MARGIN_MB))
 if [ "$size_mb" -ge "$threshold" ]; then
@@ -290,7 +275,6 @@ fi
 
 VOL_URL="https://${TOKEN}@github.com/${OWNER}/${CURRENT_VOL}.git"
 
-# Create backup branch
 tmp_b="$WORK/_tmp_backup_branch"
 rm -rf "$tmp_b"
 mkdir -p "$tmp_b"
@@ -305,11 +289,9 @@ mkdir -p "$tmp_b"
   rm -rf ./* ./.??* 2>/dev/null || true
   mkdir -p n8n-data
 
-  # Checkpoint WAL
   sqlite3 "$N8N_DIR/database.sqlite" ".timeout 10000" \
     "PRAGMA wal_checkpoint(TRUNCATE);" >/dev/null 2>&1 || true
 
-  # 1) DB dump -> gzip -> split
   : > n8n-data/db_dump.stderr
   sqlite3 "$N8N_DIR/database.sqlite" ".timeout 10000" ".dump" \
     2>n8n-data/db_dump.stderr \
@@ -317,7 +299,6 @@ mkdir -p "$tmp_b"
     | split -b "$CHUNK_SIZE" -d -a 4 - "n8n-data/db.sql.gz.part_"
   ls n8n-data/db.sql.gz.part_* >/dev/null 2>&1 || { echo "DB dump failed"; exit 1; }
 
-  # 2) Files -> tar -> gzip -> split
   : > n8n-data/files_archive.stderr
   TAR_EXCLUDES="--exclude=database.sqlite --exclude=database.sqlite-wal --exclude=database.sqlite-shm"
   if [ "$BACKUP_BINARYDATA" != "true" ]; then
@@ -330,7 +311,6 @@ mkdir -p "$tmp_b"
     | split -b "$CHUNK_SIZE" -d -a 4 - "n8n-data/files.tar.gz.part_"
   ls n8n-data/files.tar.gz.part_* >/dev/null 2>&1 || { echo "Files archive failed"; exit 1; }
 
-  # 3) Backup info
   cat > n8n-data/backup_info.txt <<EOF
 ID=$ID
 TIMESTAMP_UTC=$TS
@@ -341,7 +321,6 @@ GZIP_LEVEL=$GZIP_LEVEL
 BACKUP_BINARYDATA=$BACKUP_BINARYDATA
 EOF
 
-  # 4) SHA256 checksums
   ( cd n8n-data && find . -maxdepth 1 -type f -print0 | sort -z | xargs -0 sha256sum ) \
     > n8n-data/SHA256SUMS.txt 2>/dev/null || true
 
@@ -351,7 +330,6 @@ EOF
 )
 rm -rf "$tmp_b" 2>/dev/null || true
 
-# Update meta in volume repo
 tmp_vm="$WORK/_tmp_volume_main"
 git_prepare_main "$tmp_vm" "$VOL_URL"
 write_meta_and_history "$tmp_vm" "$CURRENT_VOL" "$BACKUP_BRANCH" "$ID" "$TS"
@@ -363,7 +341,6 @@ write_meta_and_history "$tmp_vm" "$CURRENT_VOL" "$BACKUP_BRANCH" "$ID" "$TS"
 )
 rm -rf "$tmp_vm" 2>/dev/null || true
 
-# Update meta in base repo
 tmp_bm="$WORK/_tmp_base_main"
 git_prepare_main "$tmp_bm" "$BASE_URL"
 write_meta_and_history "$tmp_bm" "$CURRENT_VOL" "$BACKUP_BRANCH" "$ID" "$TS"
