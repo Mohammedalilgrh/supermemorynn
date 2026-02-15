@@ -52,6 +52,37 @@ sqlite3 "$N8N_DIR/database.sqlite" .dump > "$DATA_DIR/full_backup.sql"
 # 3️⃣ تقنية الـ Chunking (تجزئة الملف لسهولة الـ Streaming)
 split -b $CHUNK_SIZE "$N8N_DIR/database.sqlite" "$DATA_DIR/chunks/n8n_part_"
 
+# 3️⃣.1️⃣ تقنية التكيف الذكي مع حجم الملفات (إضافة جديدة)
+check_file_size() {
+    local file="$1"
+    local size=$(stat -c%s "$file" 2>/dev/null || stat -f%z "$file" 2>/dev/null)
+    local size_mb=$((size / 1024 / 1024))
+    
+    if [ "$size_mb" -lt 10 ]; then
+        echo "📦 ملف صغير (أقل من 10MB)، استخدام النسخة الكاملة..."
+        cp "$file" "$DATA_DIR/$(basename "$file")"
+        return 0
+    elif [ "$size_mb" -lt 100 ]; then
+        echo "📦 ملف متوسط (10-100MB)، استخدام النسخة المضغوطة..."
+        gzip -c "$file" > "$DATA_DIR/$(basename "$file").gz"
+        return 0
+    else
+        echo "📦 ملف كبير (أكبر من 100MB)، استخدام التجزئة..."
+        return 1
+    fi
+}
+
+# تطبيق التكيف الذكي على جميع الملفات المهمة
+echo "🔍 فحص حجم الملفات للتكيف الذكي..."
+for file in "$N8N_DIR/database.sqlite" "$N8N_DIR"/.n8n-encryption-key "$N8N_DIR"/encryptionKey "$N8N_DIR"/config; do
+    if [ -f "$file" ]; then
+        if ! check_file_size "$file"; then
+            filename=$(basename "$file")
+            split -b $CHUNK_SIZE "$file" "$DATA_DIR/chunks/${filename}_part_"
+        fi
+    fi
+done
+
 # 4️⃣ نسخ المفاتيح والإعدادات
 cp "$N8N_DIR"/.n8n-encryption-key "$DATA_DIR/" 2>/dev/null || true
 cp "$N8N_DIR"/encryptionKey "$DATA_DIR/" 2>/dev/null || true
