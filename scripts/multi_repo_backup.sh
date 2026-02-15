@@ -2,6 +2,11 @@
 set -eu
 umask 077
 
+# ============================================================
+# multi_repo_backup.sh
+# Append-only backups with auto volume rotation
+# ============================================================
+
 BASE_REPO="${GITHUB_REPO_NAME:?missing GITHUB_REPO_NAME}"
 OWNER="${GITHUB_REPO_OWNER:?missing GITHUB_REPO_OWNER}"
 TOKEN="${GITHUB_TOKEN:?missing GITHUB_TOKEN}"
@@ -37,7 +42,8 @@ META_HISTORY="$META_DIR/history.log"
 
 mkdir -p "$WORK"
 
-need_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "Missing dependency: $1" >&2; exit 1; }; }
+# ── Dependencies ──
+need_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "Missing: $1" >&2; exit 1; }; }
 need_cmd git
 need_cmd curl
 need_cmd jq
@@ -53,43 +59,43 @@ need_cmd xargs
 need_cmd sha256sum
 need_cmd find
 
-# lock
+# ── Lock (prevent parallel runs) ──
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
   exit 0
 fi
 trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
 
+# ── Helpers ──
 now_epoch() { date +%s; }
 utc_ts() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
 backup_id() { date +"%Y-%m-%d_%H-%M-%S"; }
 
 api_json() {
-  curl -sS -H "Authorization: token $TOKEN" -H "Accept: application/vnd.github+json" "$1"
+  curl -sS -H "Authorization: token $TOKEN" \
+       -H "Accept: application/vnd.github+json" "$1"
 }
 
 repo_exists() {
-  code=$(curl -sS -o /dev/null -w "%{http_code}" -H "Authorization: token $TOKEN" \
+  code=$(curl -sS -o /dev/null -w "%{http_code}" \
+    -H "Authorization: token $TOKEN" \
     "https://api.github.com/repos/${OWNER}/${1}")
   [ "$code" = "200" ]
 }
 
 create_repo() {
-  name="$1"
-  curl -sS -X POST -H "Authorization: token $TOKEN" -H "Accept: application/vnd.github+json" \
-    -d "{\"name\":\"$name\",\"private\":true}" \
+  curl -sS -X POST \
+    -H "Authorization: token $TOKEN" \
+    -H "Accept: application/vnd.github+json" \
+    -d "{\"name\":\"$1\",\"private\":true}" \
     "https://api.github.com/user/repos" >/dev/null
 }
 
 ensure_repo() {
-  r="$1"
-  if ! repo_exists "$r"; then
-    create_repo "$r"
-  fi
+  repo_exists "$1" || create_repo "$1"
 }
 
 get_repo_size_mb() {
-  r="$1"
-  size_kb=$(api_json "https://api.github.com/repos/${OWNER}/${r}" | jq '.size // 0')
+  size_kb=$(api_json "https://api.github.com/repos/${OWNER}/${1}" | jq '.size // 0')
   awk "BEGIN{printf \"%d\", ($size_kb/1024)}"
 }
 
@@ -144,6 +150,7 @@ read_pointer_from_base() {
   )
 }
 
+# ── Change detection ──
 db_sig() {
   db="$N8N_DIR/database.sqlite"
   wal="$N8N_DIR/database.sqlite-wal"
@@ -181,14 +188,17 @@ should_backup() {
   cur_db="$(db_sig)"
   cur_bin="$(bin_sig)"
 
+  # Force backup every 24h
   if [ $((now - last_force)) -ge "$FORCE_BACKUP_EVERY_SEC" ]; then
     echo "FORCE"; return
   fi
 
+  # No changes
   if [ "$cur_db" = "$last_db" ] && [ "$cur_bin" = "$last_bin" ]; then
     echo "NOCHANGE"; return
   fi
 
+  # Too soon (cooldown)
   if [ $((now - last_epoch)) -lt "$MIN_BACKUP_INTERVAL_SEC" ]; then
     echo "COOLDOWN"; return
   fi
@@ -211,11 +221,10 @@ LAST_BIN_SIG=$(bin_sig)
 EOF
 }
 
-pad_index() { i="$1"; printf "%0${VOLUME_PAD}d" "$i"; }
+pad_index() { printf "%0${VOLUME_PAD}d" "$1"; }
 
 default_volume_repo() {
-  idx="$(pad_index "$VOLUME_START_INDEX")"
-  printf "%s%s" "$VOLUME_PREFIX" "$idx"
+  printf "%s%s" "$VOLUME_PREFIX" "$(pad_index "$VOLUME_START_INDEX")"
 }
 
 find_or_create_next_volume() {
@@ -242,18 +251,25 @@ find_or_create_next_volume() {
   done
 }
 
-# ---------------- Main ----------------
+# ============================================================
+# MAIN
+# ============================================================
+
 DECISION="$(should_backup)"
 [ "$DECISION" = "NOCHANGE" ] && exit 0
 [ "$DECISION" = "COOLDOWN" ] && exit 0
+
+echo "Backup decision: $DECISION"
 
 ID="$(backup_id)"
 TS="$(utc_ts)"
 BACKUP_BRANCH="backup/$ID"
 
+# Ensure base repo exists
 ensure_repo "$BASE_REPO"
 BASE_URL="https://${TOKEN}@github.com/${OWNER}/${BASE_REPO}.git"
 
+# Find current volume repo
 tmp_ptr="$WORK/_tmp_ptr"
 ptr_repo="$(read_pointer_from_base "$BASE_URL" "$tmp_ptr" 2>/dev/null || true)"
 rm -rf "$tmp_ptr" 2>/dev/null || true
@@ -262,15 +278,19 @@ CURRENT_VOL="$ptr_repo"
 [ -n "$CURRENT_VOL" ] || CURRENT_VOL="$(default_volume_repo)"
 ensure_repo "$CURRENT_VOL"
 
+# Rotate if volume is near full
 size_mb="$(get_repo_size_mb "$CURRENT_VOL" || echo 0)"
 threshold=$((MAX_REPO_SIZE_MB - REPO_SIZE_MARGIN_MB))
 if [ "$size_mb" -ge "$threshold" ]; then
+  echo "Volume $CURRENT_VOL full (${size_mb}MB), rotating..."
   CURRENT_VOL="$(find_or_create_next_volume)" || exit 1
   [ "$CURRENT_VOL" != "ERROR" ] || exit 1
+  echo "New volume: $CURRENT_VOL"
 fi
 
 VOL_URL="https://${TOKEN}@github.com/${OWNER}/${CURRENT_VOL}.git"
 
+# Create backup branch
 tmp_b="$WORK/_tmp_backup_branch"
 rm -rf "$tmp_b"
 mkdir -p "$tmp_b"
@@ -285,14 +305,19 @@ mkdir -p "$tmp_b"
   rm -rf ./* ./.??* 2>/dev/null || true
   mkdir -p n8n-data
 
-  sqlite3 "$N8N_DIR/database.sqlite" ".timeout 10000" "PRAGMA wal_checkpoint(TRUNCATE);" >/dev/null 2>&1 || true
+  # Checkpoint WAL
+  sqlite3 "$N8N_DIR/database.sqlite" ".timeout 10000" \
+    "PRAGMA wal_checkpoint(TRUNCATE);" >/dev/null 2>&1 || true
 
+  # 1) DB dump -> gzip -> split
   : > n8n-data/db_dump.stderr
-  sqlite3 "$N8N_DIR/database.sqlite" ".timeout 10000" ".dump" 2>n8n-data/db_dump.stderr \
+  sqlite3 "$N8N_DIR/database.sqlite" ".timeout 10000" ".dump" \
+    2>n8n-data/db_dump.stderr \
     | gzip -n -"$GZIP_LEVEL" -c \
     | split -b "$CHUNK_SIZE" -d -a 4 - "n8n-data/db.sql.gz.part_"
   ls n8n-data/db.sql.gz.part_* >/dev/null 2>&1 || { echo "DB dump failed"; exit 1; }
 
+  # 2) Files -> tar -> gzip -> split
   : > n8n-data/files_archive.stderr
   TAR_EXCLUDES="--exclude=database.sqlite --exclude=database.sqlite-wal --exclude=database.sqlite-shm"
   if [ "$BACKUP_BINARYDATA" != "true" ]; then
@@ -305,6 +330,7 @@ mkdir -p "$tmp_b"
     | split -b "$CHUNK_SIZE" -d -a 4 - "n8n-data/files.tar.gz.part_"
   ls n8n-data/files.tar.gz.part_* >/dev/null 2>&1 || { echo "Files archive failed"; exit 1; }
 
+  # 3) Backup info
   cat > n8n-data/backup_info.txt <<EOF
 ID=$ID
 TIMESTAMP_UTC=$TS
@@ -315,7 +341,9 @@ GZIP_LEVEL=$GZIP_LEVEL
 BACKUP_BINARYDATA=$BACKUP_BINARYDATA
 EOF
 
-  ( cd n8n-data && find . -maxdepth 1 -type f -print0 | sort -z | xargs -0 sha256sum ) > n8n-data/SHA256SUMS.txt
+  # 4) SHA256 checksums
+  ( cd n8n-data && find . -maxdepth 1 -type f -print0 | sort -z | xargs -0 sha256sum ) \
+    > n8n-data/SHA256SUMS.txt 2>/dev/null || true
 
   git add -A
   git commit -q -m "n8n backup $ID"
@@ -323,6 +351,7 @@ EOF
 )
 rm -rf "$tmp_b" 2>/dev/null || true
 
+# Update meta in volume repo
 tmp_vm="$WORK/_tmp_volume_main"
 git_prepare_main "$tmp_vm" "$VOL_URL"
 write_meta_and_history "$tmp_vm" "$CURRENT_VOL" "$BACKUP_BRANCH" "$ID" "$TS"
@@ -334,6 +363,7 @@ write_meta_and_history "$tmp_vm" "$CURRENT_VOL" "$BACKUP_BRANCH" "$ID" "$TS"
 )
 rm -rf "$tmp_vm" 2>/dev/null || true
 
+# Update meta in base repo
 tmp_bm="$WORK/_tmp_base_main"
 git_prepare_main "$tmp_bm" "$BASE_URL"
 write_meta_and_history "$tmp_bm" "$CURRENT_VOL" "$BACKUP_BRANCH" "$ID" "$TS"
@@ -346,4 +376,6 @@ write_meta_and_history "$tmp_bm" "$CURRENT_VOL" "$BACKUP_BRANCH" "$ID" "$TS"
 rm -rf "$tmp_bm" 2>/dev/null || true
 
 update_state "$ID" "$TS" "$CURRENT_VOL" "$BACKUP_BRANCH"
+
+echo "Backup complete: $ID -> $CURRENT_VOL/$BACKUP_BRANCH"
 exit 0
