@@ -16,11 +16,11 @@ services:
 
       # Backup interval (seconds) - how often the loop runs
       - key: MONITOR_INTERVAL
-        value: "120"
+        value: "10"
 
       # Minimum seconds between actual backups (cooldown)
       - key: MIN_BACKUP_INTERVAL_SEC
-        value: "300"
+        value: "30"
 
       # Don't backup binary files (videos etc)
       - key: BACKUP_BINARYDATA
