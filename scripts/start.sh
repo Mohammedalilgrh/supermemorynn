@@ -8,9 +8,6 @@ WORK="${WORK:-/backup-data}"
 
 mkdir -p "$N8N_DIR" "$WORK"
 
-# ───────────────────────────────────
-# Git config (دائم)
-# ───────────────────────────────────
 export HOME="/home/node"
 mkdir -p "$HOME"
 cat > "$HOME/.gitconfig" <<'GITCONF'
@@ -21,45 +18,45 @@ cat > "$HOME/.gitconfig" <<'GITCONF'
     directory = *
 GITCONF
 
-echo "=== n8n Startup ==="
-echo "Time: $(date -u)"
+echo "=== 🚀 بدء خدمة n8n ==="
+echo "الوقت: $(date -u)"
 
-# ───────────────────────────────────
-# Check Tools
-# ───────────────────────────────────
-echo "=== Checking Tools ==="
+# ✅ التأكد من الأدوات
+echo "🧪 التحقق من الأدوات:"
 TOOLS_OK=true
 for cmd in git curl jq sqlite3 tar gzip split sha256sum stat du sort tail tac awk xargs find cut tr; do
   if command -v "$cmd" >/dev/null 2>&1; then
-    echo "  OK: $cmd"
+    echo "  ✅ $cmd"
   else
-    echo "  MISSING: $cmd"
+    echo "  ❌ مفقود: $cmd"
     TOOLS_OK=false
   fi
 done
-echo "=== Tools Check Done ==="
+echo "=== ✅ التحقق من الأدوات – تمت ==="
 
-# ───────────────────────────────────
-# Restore (تلقائي - لو ما فيه داتابيس)
-# ───────────────────────────────────
+# 📦 استرجاع باك أب
 if [ ! -s "$N8N_DIR/database.sqlite" ]; then
-  echo "=== No local database - attempting restore ==="
+  echo "🔄 لا يوجد قاعدة بيانات – محاولة استرجاع"
   if [ "$TOOLS_OK" = "true" ]; then
-    /scripts/restore.sh 2>&1 || echo "=== No backup found - starting fresh ==="
+    if /scripts/restore.sh 2>&1; then
+      echo "✅ تم الاسترجاع – الانطلاق!"
+    else
+      echo "❌ فشل استرجاع البيانات – إيقاف النظام"
+      exit 1
+    fi
   else
-    echo "=== Tools missing - cannot restore ==="
+    echo "❌ الأدوات مفقودة – لا يمكن الاسترجاع"
+    exit 1
   fi
 else
-  echo "=== Local database exists - skipping restore ==="
+  echo "🟢 قاعدة بيانات موجودة – الاسترجاع غير مطلوب"
 fi
 
-# ───────────────────────────────────
-# Backup monitor (دائم)
-# ───────────────────────────────────
+# 🛡️ بدء عملية الباك أب التلقائي
 if [ "$TOOLS_OK" = "true" ]; then
   (
     sleep 30
-    echo "[backup-monitor] Started (interval: ${MONITOR_INTERVAL}s)"
+    echo "[backup-monitor] بدء المراقبة كل ${MONITOR_INTERVAL}s"
     while true; do
       /scripts/multi_repo_backup.sh 2>&1 | while IFS= read -r line; do
         echo "[backup] $line"
@@ -68,11 +65,8 @@ if [ "$TOOLS_OK" = "true" ]; then
     done
   ) &
 else
-  echo "=== WARNING: Backup disabled - tools missing ==="
+  echo "⚠️ تنبيه: النسخ الاحتياطي غير مفعل – أدوات ناقصة"
 fi
 
-# ───────────────────────────────────
-# Start n8n
-# ───────────────────────────────────
-echo "=== Starting n8n ==="
+echo "🚀 تشغيل n8n..."
 exec n8n start
