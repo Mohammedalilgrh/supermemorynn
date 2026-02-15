@@ -100,30 +100,58 @@ verify_sha256_if_present() {
 restore_from_backup_tree() {
   bdir="$1"
 
-  if ls "$bdir"/n8n-data/files.tar.gz.part_* >/dev/null 2>&1; then
-    cat "$bdir"/n8n-data/files.tar.gz.part_* \
-      | gzip -dc \
-      | tar -C "$N8N_DIR" -xf -
-  fi
-
-  rm -f "$N8N_DIR/database.sqlite" \
-        "$N8N_DIR/database.sqlite-wal" \
-        "$N8N_DIR/database.sqlite-shm" 2>/dev/null || true
-
+  # ─── New format: db.sql.gz.part_* ───
   if ls "$bdir"/n8n-data/db.sql.gz.part_* >/dev/null 2>&1; then
+    echo "Restoring: new format (sql.gz parts)"
+
+    if ls "$bdir"/n8n-data/files.tar.gz.part_* >/dev/null 2>&1; then
+      cat "$bdir"/n8n-data/files.tar.gz.part_* \
+        | gzip -dc \
+        | tar -C "$N8N_DIR" -xf -
+    fi
+
+    rm -f "$N8N_DIR/database.sqlite" \
+          "$N8N_DIR/database.sqlite-wal" \
+          "$N8N_DIR/database.sqlite-shm" 2>/dev/null || true
+
     ls -1 "$bdir"/n8n-data/db.sql.gz.part_* 2>/dev/null \
       | sort | xargs cat \
       | gzip -dc \
       | sqlite3 "$N8N_DIR/database.sqlite"
+
+  # ─── Legacy format: uncompressed sql parts ───
   elif ls "$bdir"/n8n-data/db.sql.part_* >/dev/null 2>&1; then
+    echo "Restoring: legacy format (sql parts)"
+
+    rm -f "$N8N_DIR/database.sqlite" 2>/dev/null || true
     ls -1 "$bdir"/n8n-data/db.sql.part_* 2>/dev/null \
       | sort | xargs cat \
       | sqlite3 "$N8N_DIR/database.sqlite"
+
+  # ─── Old format: direct database.sqlite ───
+  elif [ -f "$bdir/database.sqlite" ]; then
+    echo "Restoring: old format (direct sqlite)"
+
+    cp "$bdir/database.sqlite" "$N8N_DIR/database.sqlite"
+    [ -f "$bdir/database.sqlite-wal" ] && cp "$bdir/database.sqlite-wal" "$N8N_DIR/" 2>/dev/null || true
+    [ -f "$bdir/database.sqlite-shm" ] && cp "$bdir/database.sqlite-shm" "$N8N_DIR/" 2>/dev/null || true
+
+    # Copy config/nodes if present
+    for d in config nodes custom-nodes; do
+      [ -d "$bdir/$d" ] && cp -r "$bdir/$d" "$N8N_DIR/" 2>/dev/null || true
+    done
+
+    # Copy other important files
+    for f in stats.json crash.journal; do
+      [ -f "$bdir/$f" ] && cp "$bdir/$f" "$N8N_DIR/" 2>/dev/null || true
+    done
+
   else
-    echo "ERROR: No DB format found" >&2
+    echo "ERROR: No supported DB format found" >&2
     return 1
   fi
 
+  # Integrity check
   sqlite_integrity_ok "$N8N_DIR/database.sqlite" || {
     echo "ERROR: SQLite integrity check failed" >&2
     return 1
@@ -162,20 +190,24 @@ restore_one() {
   restore_from_backup_tree "$TMP_BKP"
 }
 
+# ── MAIN ──
+
 if [ "$FORCE_RESTORE" != "true" ] && [ -s "$N8N_DIR/database.sqlite" ]; then
   echo "Local database exists - skipping restore"
   exit 0
 fi
 
+# Explicit restore (old repo)
 if [ -n "$RESTORE_REPO" ] && [ -n "$RESTORE_BRANCH" ]; then
   if restore_one "$RESTORE_REPO" "$RESTORE_BRANCH"; then
-    echo "Explicit restore successful"
+    echo "Restore successful from $RESTORE_REPO/$RESTORE_BRANCH"
     exit 0
   fi
   echo "Explicit restore failed"
   exit 1
 fi
 
+# Auto restore from meta
 echo "Fetching restore info from: ${OWNER}/${BASE_REPO}"
 
 git_clone_retry "$BASE_URL" "$GITHUB_BRANCH" "$TMP_BASE" 1 || {
@@ -205,26 +237,16 @@ if [ ! -s "$CANDIDATES" ]; then
   exit 1
 fi
 
-echo "Trying restore candidates..."
-
 RESTORED="false"
 while read -r ts repo branch id; do
   if restore_one "$repo" "$branch"; then
     RESTORED="true"
-    cat > "$WORK/.restore_state" <<EOF
-RESTORED_TS=$ts
-RESTORED_REPO=$repo
-RESTORED_BRANCH=$branch
-EOF
     echo "Restored from: $repo/$branch"
     break
   fi
 done < "$CANDIDATES"
 
-if [ "$RESTORED" != "true" ]; then
-  echo "All restore attempts failed"
-  exit 1
-fi
+[ "$RESTORED" = "true" ] || { echo "All restore attempts failed"; exit 1; }
 
 echo "=== Restore Complete ==="
 exit 0
