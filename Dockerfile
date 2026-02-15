@@ -1,5 +1,5 @@
 # ============================================
-# Stage 1: Alpine - نجهز كل شي بمجلد واحد
+# Stage 1: Alpine - نجهز كل شي
 # ============================================
 FROM alpine:3.20 AS tools
 
@@ -42,21 +42,22 @@ FROM docker.n8n.io/n8nio/n8n:2.3.6
 
 USER root
 
-# ننسخ كل الأدوات من المجلد الجاهز
+# الأدوات
 COPY --from=tools /toolbox/              /usr/local/bin/
 
 # Git extra files
 COPY --from=tools /usr/libexec/git-core/ /usr/local/libexec/git-core/
 COPY --from=tools /usr/share/git-core/   /usr/share/git-core/
 
-# المكتبات
+# كل المكتبات (مهم جداً!)
 COPY --from=tools /usr/lib/              /usr/local/lib/
+COPY --from=tools /lib/                  /usr/local/lib2/
 
 # SSL
 COPY --from=tools /etc/ssl/certs/        /etc/ssl/certs/
 
 # المسارات
-ENV LD_LIBRARY_PATH="/usr/local/lib:$LD_LIBRARY_PATH"
+ENV LD_LIBRARY_PATH="/usr/local/lib:/usr/local/lib2:$LD_LIBRARY_PATH"
 ENV GIT_EXEC_PATH="/usr/local/libexec/git-core"
 ENV PATH="/usr/local/bin:$PATH"
 
