@@ -1,187 +1,396 @@
 #!/bin/sh
+set -eu
+umask 077
 
-# ============================================
-# نظام التخزين المتعدد - مساحة لا محدودة!
-# ============================================
+# ============================================================
+# multi_repo_backup.sh
+# - Append-only backups (never overwrite / never force-push)
+# - Each backup stored as orphan branch: backup/<timestamp>
+# - Base repo (GITHUB_REPO_NAME) holds only pointers/meta (small)
+# - Backups are stored in rotating volume repos: <base>-vol-0001, 0002, ...
+# - Streaming + chunking to avoid GitHub 100MB limit
+# ============================================================
 
-MAX_REPO_SIZE_MB=4500  # 4.5GB حد أقصى لكل ريبو (نخلي 500MB احتياط)
-N8N_DIR="/home/node/.n8n"
+# ---------- Required env ----------
+BASE_REPO="${GITHUB_REPO_NAME:?missing GITHUB_REPO_NAME}"      # meta/index repo name
+OWNER="${GITHUB_REPO_OWNER:?missing GITHUB_REPO_OWNER}"
+TOKEN="${GITHUB_TOKEN:?missing GITHUB_TOKEN}"
+
+# ---------- Optional env ----------
 GITHUB_BRANCH="${GITHUB_BRANCH:-main}"
-TIMESTAMP=$(date +"%Y-%m-%d_%H:%M:%S")
+N8N_DIR="${N8N_DIR:-/home/node/.n8n}"
+WORK="${WORK:-/backup-data}"
 
-# ============================================
-# الدالة: حساب حجم المجلد
-# ============================================
-get_dir_size_mb() {
-    du -sm "$1" 2>/dev/null | cut -f1
+# keep margin below 5GB
+MAX_REPO_SIZE_MB="${MAX_REPO_SIZE_MB:-4800}"
+REPO_SIZE_MARGIN_MB="${REPO_SIZE_MARGIN_MB:-300}"
+
+# Must be < 100MB because GitHub blocks large blobs
+CHUNK_SIZE="${CHUNK_SIZE:-40M}"
+GZIP_LEVEL="${GZIP_LEVEL:-1}"  # 1=fast, 6=default, 9=max
+
+# reduce stress on small hosts (Render free)
+MIN_BACKUP_INTERVAL_SEC="${MIN_BACKUP_INTERVAL_SEC:-300}"   # 5 min
+FORCE_BACKUP_EVERY_SEC="${FORCE_BACKUP_EVERY_SEC:-86400}"   # 24h force
+
+# Save binaryData too? (Will grow repos fast)
+BACKUP_BINARYDATA="${BACKUP_BINARYDATA:-true}"
+
+# Volume repo naming
+VOLUME_PREFIX="${VOLUME_PREFIX:-${BASE_REPO}-vol-}"
+VOLUME_START_INDEX="${VOLUME_START_INDEX:-1}"
+VOLUME_PAD="${VOLUME_PAD:-4}"   # 0001, 0002...
+
+STATE_FILE="$WORK/.backup_state"
+LOCK_DIR="$WORK/.backup_lock"
+
+# Meta pointers (in base repo main and also in volume repo main)
+META_DIR="n8n-data/_meta"
+META_LATEST_REPO="$META_DIR/latest_repo"
+META_LATEST_BRANCH="$META_DIR/latest_branch"
+META_LATEST_ID="$META_DIR/latest_id"
+META_LATEST_TS="$META_DIR/latest_timestamp"
+META_HISTORY="$META_DIR/history.log"
+
+mkdir -p "$WORK"
+
+# ---------- deps ----------
+need_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "Missing dependency: $1" >&2; exit 1; }; }
+need_cmd git
+need_cmd curl
+need_cmd jq
+need_cmd sqlite3
+need_cmd tar
+need_cmd gzip
+need_cmd split
+need_cmd stat
+need_cmd du
+need_cmd awk
+need_cmd sort
+need_cmd xargs
+
+# ---------- lock ----------
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+  exit 0
+fi
+trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
+
+# ---------- helpers ----------
+now_epoch() { date +%s; }
+utc_ts() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
+backup_id() { date +"%Y-%m-%d_%H-%M-%S"; }
+
+api_json() {
+  curl -sS -H "Authorization: token $TOKEN" -H "Accept: application/vnd.github+json" "$1"
 }
 
-# ============================================
-# الدالة: حساب حجم الريبو على GitHub
-# ============================================
+repo_exists() {
+  code=$(curl -sS -o /dev/null -w "%{http_code}" -H "Authorization: token $TOKEN" \
+    "https://api.github.com/repos/${OWNER}/${1}")
+  [ "$code" = "200" ]
+}
+
+create_repo() {
+  name="$1"
+  curl -sS -X POST -H "Authorization: token $TOKEN" -H "Accept: application/vnd.github+json" \
+    -d "{\"name\":\"$name\",\"private\":true}" \
+    "https://api.github.com/user/repos" >/dev/null
+}
+
+ensure_repo() {
+  r="$1"
+  if ! repo_exists "$r"; then
+    create_repo "$r"
+  fi
+}
+
 get_repo_size_mb() {
-    local repo_name="$1"
-    local response=$(curl -s \
-        -H "Authorization: token $GITHUB_TOKEN" \
-        "https://api.github.com/repos/${GITHUB_REPO_OWNER}/${repo_name}")
-    
-    echo "$response" | jq '.size // 0' 2>/dev/null | awk '{printf "%.0f", $1/1024}'
+  r="$1"
+  size_kb=$(api_json "https://api.github.com/repos/${OWNER}/${r}" | jq '.size // 0')
+  awk "BEGIN{printf \"%d\", ($size_kb/1024)}"
 }
 
-# ============================================
-# الدالة: إنشاء ريبو جديد تلقائياً
-# ============================================
-create_new_repo() {
-    local repo_name="$1"
-    
-    echo "🆕 إنشاء ريبو جديد: $repo_name"
-    
-    curl -s -X POST \
-        -H "Authorization: token $GITHUB_TOKEN" \
-        -H "Accept: application/vnd.github.v3+json" \
-        "https://api.github.com/user/repos" \
-        -d "{
-            \"name\": \"$repo_name\",
-            \"private\": true,
-            \"description\": \"n8n Auto Backup Storage - $(date)\",
-            \"auto_init\": true
-        }"
-    
-    echo "✅ تم إنشاء $repo_name"
-    sleep 2
+git_ident() {
+  git config user.email >/dev/null 2>&1 || git config user.email "backup@local"
+  git config user.name  >/dev/null 2>&1 || git config user.name  "n8n-backup-bot"
 }
 
-# ============================================
-# الدالة: إيجاد الريبو المناسب
-# ============================================
-find_available_repo() {
-    local base_name="${GITHUB_REPO_NAME:-n8n-storage}"
-    local needed_mb="$1"
-    
-    # جرّب الريبو الأساسي أولاً
-    local current_size=$(get_repo_size_mb "$base_name")
-    
-    if [ "$current_size" -lt "$MAX_REPO_SIZE_MB" ]; then
-        local remaining=$((MAX_REPO_SIZE_MB - current_size))
-        if [ "$remaining" -gt "$needed_mb" ]; then
-            echo "$base_name"
-            return
-        fi
-    fi
-    
-    # جرّب ريبوهات إضافية
-    for i in $(seq 2 100); do
-        local repo_name="${base_name}-${i}"
-        
-        # تحقق إذا الريبو موجود
-        local response=$(curl -s -o /dev/null -w "%{http_code}" \
-            -H "Authorization: token $GITHUB_TOKEN" \
-            "https://api.github.com/repos/${GITHUB_REPO_OWNER}/${repo_name}")
-        
-        if [ "$response" == "404" ]; then
-            # ريبو مو موجود، نسويه
-            create_new_repo "$repo_name"
-            echo "$repo_name"
-            return
-        fi
-        
-        # تحقق من الحجم
-        local repo_size=$(get_repo_size_mb "$repo_name")
-        if [ "$repo_size" -lt "$MAX_REPO_SIZE_MB" ]; then
-            local remaining=$((MAX_REPO_SIZE_MB - repo_size))
-            if [ "$remaining" -gt "$needed_mb" ]; then
-                echo "$repo_name"
-                return
-            fi
-        fi
-    done
-    
-    echo "ERROR"
-}
-
-# ============================================
-# الدالة: النسخ الاحتياطي الذكي
-# ============================================
-smart_backup() {
-    echo "🧠 بدء النسخ الاحتياطي الذكي..."
-    
-    # حساب حجم البيانات
-    local data_size_mb=$(get_dir_size_mb "$N8N_DIR")
-    echo "📊 حجم البيانات: ${data_size_mb}MB"
-    
-    # إيجاد ريبو مناسب
-    local target_repo=$(find_available_repo "$data_size_mb")
-    
-    if [ "$target_repo" == "ERROR" ]; then
-        echo "❌ ما لگينا ريبو مناسب!"
-        return 1
-    fi
-    
-    echo "📦 الريبو المستهدف: $target_repo"
-    
-    local REPO_URL="https://${GITHUB_TOKEN}@github.com/${GITHUB_REPO_OWNER}/${target_repo}.git"
-    local WORK_DIR="/tmp/backup_${target_repo}"
-    
-    # استنساخ أو تحديث
-    rm -rf "$WORK_DIR"
-    if ! git clone --branch "$GITHUB_BRANCH" --depth 1 "$REPO_URL" "$WORK_DIR" 2>/dev/null; then
-        mkdir -p "$WORK_DIR"
-        cd "$WORK_DIR"
-        git init
-        git checkout -b "$GITHUB_BRANCH"
-        git remote add origin "$REPO_URL"
-    fi
-    
-    cd "$WORK_DIR"
-    mkdir -p n8n-data
-    
-    # نسخ البيانات
-    if [ -f "$N8N_DIR/database.sqlite" ]; then
-        cp "$N8N_DIR/database.sqlite" n8n-data/
-    fi
-    
-    for f in ".n8n-encryption-key" "encryptionKey" "config"; do
-        [ -f "$N8N_DIR/$f" ] && cp "$N8N_DIR/$f" n8n-data/
-    done
-    
-    for d in "custom" "nodes"; do
-        [ -d "$N8N_DIR/$d" ] && cp -r "$N8N_DIR/$d" n8n-data/
-    done
-    
-    # إحصائيات
-    cat > n8n-data/stats.json << EOF
-{
-    "timestamp": "$TIMESTAMP",
-    "repo": "$target_repo",
-    "size_mb": $data_size_mb,
-    "repo_size_mb": $(get_repo_size_mb "$target_repo")
-}
-EOF
-    
-    # حفظ خريطة الريبوهات
-    cat > n8n-data/repo_map.json << EOF
-{
-    "primary_repo": "${GITHUB_REPO_NAME:-n8n-storage}",
-    "current_repo": "$target_repo",
-    "last_backup": "$TIMESTAMP",
-    "max_repo_size_mb": $MAX_REPO_SIZE_MB
-}
-EOF
-    
-    # رفع
-    git add -A
-    if ! git diff --staged --quiet; then
-        git commit -m "💾 نسخة احتياطية - $TIMESTAMP"
-        git push origin "$GITHUB_BRANCH" 2>/dev/null || \
-        git push -f origin "$GITHUB_BRANCH" 2>/dev/null
-        echo "✅ تم الحفظ في $target_repo"
+git_prepare_main() {
+  dir="$1"; url="$2"
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  (
+    cd "$dir"
+    git init -q
+    git_ident
+    git remote add origin "$url"
+    if git fetch -q --depth 1 origin "$GITHUB_BRANCH" 2>/dev/null; then
+      git checkout -q -B "$GITHUB_BRANCH" FETCH_HEAD
     else
-        echo "ℹ️ لا تغييرات"
+      git checkout -q --orphan "$GITHUB_BRANCH"
+      mkdir -p "$META_DIR"
+      echo "initialized $(date -u)" > "$META_DIR/initialized.txt"
+      git add -A
+      git commit -q -m "init meta"
+      git push -q -u origin "$GITHUB_BRANCH" || true
     fi
-    
-    # تنظيف
-    rm -rf "$WORK_DIR"
+  )
 }
 
-# تشغيل
-smart_backup
+write_meta_and_history() {
+  dir="$1"; latest_repo="$2"; latest_branch="$3"; id="$4"; ts="$5"
+  (
+    cd "$dir"
+    mkdir -p "$META_DIR"
+    printf "%s" "$latest_repo"   > "$META_LATEST_REPO"
+    printf "%s" "$latest_branch" > "$META_LATEST_BRANCH"
+    printf "%s" "$id"            > "$META_LATEST_ID"
+    printf "%s" "$ts"            > "$META_LATEST_TS"
+    echo "$ts $latest_repo $latest_branch $id" >> "$META_HISTORY"
+  )
+}
+
+read_pointer_from_base() {
+  base_url="$1"; tmp="$2"
+  git_prepare_main "$tmp" "$base_url"
+  (
+    cd "$tmp"
+    r=""; b=""
+    [ -f "$META_LATEST_REPO" ] && r=$(cat "$META_LATEST_REPO" 2>/dev/null || true)
+    [ -f "$META_LATEST_BRANCH" ] && b=$(cat "$META_LATEST_BRANCH" 2>/dev/null || true)
+    printf "%s %s\n" "$r" "$b"
+  )
+}
+
+# Quick signatures (avoid heavy hashing)
+db_sig() {
+  db="$N8N_DIR/database.sqlite"
+  wal="$N8N_DIR/database.sqlite-wal"
+  shm="$N8N_DIR/database.sqlite-shm"
+  sig=""
+  [ -f "$db" ]  && sig="${sig}db:$(stat -c '%Y:%s' "$db" 2>/dev/null || echo 0:0);"
+  [ -f "$wal" ] && sig="${sig}wal:$(stat -c '%Y:%s' "$wal" 2>/dev/null || echo 0:0);"
+  [ -f "$shm" ] && sig="${sig}shm:$(stat -c '%Y:%s' "$shm" 2>/dev/null || echo 0:0);"
+  printf "%s" "$sig"
+}
+
+bin_sig() {
+  [ "$BACKUP_BINARYDATA" = "true" ] || { printf "skip"; return; }
+  bd="$N8N_DIR/binaryData"
+  [ -d "$bd" ] || { printf "none"; return; }
+  du -sk "$bd" 2>/dev/null | awk '{print "bdkb:"$1}' || echo "bdkb:0"
+}
+
+should_backup() {
+  [ -f "$N8N_DIR/database.sqlite" ] || exit 0
+
+  now="$(now_epoch)"
+  last_epoch=0
+  last_force=0
+  last_db=""
+  last_bin=""
+
+  if [ -f "$STATE_FILE" ]; then
+    last_epoch=$(grep '^LAST_BACKUP_EPOCH=' "$STATE_FILE" 2>/dev/null | cut -d= -f2 || echo 0)
+    last_force=$(grep '^LAST_FORCE_EPOCH=' "$STATE_FILE" 2>/dev/null | cut -d= -f2 || echo 0)
+    last_db=$(grep '^LAST_DB_SIG=' "$STATE_FILE" 2>/dev/null | cut -d= -f2- || echo "")
+    last_bin=$(grep '^LAST_BIN_SIG=' "$STATE_FILE" 2>/dev/null | cut -d= -f2- || echo "")
+  fi
+
+  cur_db="$(db_sig)"
+  cur_bin="$(bin_sig)"
+
+  if [ $((now - last_force)) -ge "$FORCE_BACKUP_EVERY_SEC" ]; then
+    echo "FORCE"; return
+  fi
+
+  if [ "$cur_db" = "$last_db" ] && [ "$cur_bin" = "$last_bin" ]; then
+    echo "NOCHANGE"; return
+  fi
+
+  if [ $((now - last_epoch)) -lt "$MIN_BACKUP_INTERVAL_SEC" ]; then
+    echo "COOLDOWN"; return
+  fi
+
+  echo "YES"
+}
+
+update_state() {
+  id="$1"; ts="$2"; repo="$3"; branch="$4"
+  now="$(now_epoch)"
+  cat > "$STATE_FILE" <<EOF
+LAST_BACKUP_ID=$id
+LAST_BACKUP_TS=$ts
+LAST_BACKUP_EPOCH=$now
+LAST_FORCE_EPOCH=$now
+LAST_REPO=$repo
+LAST_BRANCH=$branch
+LAST_DB_SIG=$(db_sig)
+LAST_BIN_SIG=$(bin_sig)
+EOF
+}
+
+pad_index() {
+  # usage: pad_index 3 -> 0003 (depends on VOLUME_PAD)
+  i="$1"
+  printf "%0${VOLUME_PAD}d" "$i"
+}
+
+default_volume_repo() {
+  idx="$(pad_index "$VOLUME_START_INDEX")"
+  printf "%s%s" "$VOLUME_PREFIX" "$idx"
+}
+
+find_or_create_next_volume() {
+  # If current is full, create next new index
+  i="$VOLUME_START_INDEX"
+  while :; do
+    idx="$(pad_index "$i")"
+    candidate="${VOLUME_PREFIX}${idx}"
+
+    if ! repo_exists "$candidate"; then
+      create_repo "$candidate"
+      echo "$candidate"
+      return
+    fi
+
+    # exists -> check size
+    size_mb="$(get_repo_size_mb "$candidate" || echo 0)"
+    threshold=$((MAX_REPO_SIZE_MB - REPO_SIZE_MARGIN_MB))
+    if [ "$size_mb" -lt "$threshold" ]; then
+      echo "$candidate"
+      return
+    fi
+
+    i=$((i + 1))
+    # safety
+    if [ "$i" -gt 9999 ]; then
+      echo "ERROR"
+      return 1
+    fi
+  done
+}
+
+# ============================================================
+# Main
+# ============================================================
+
+DECISION="$(should_backup)"
+[ "$DECISION" = "NOCHANGE" ] && exit 0
+[ "$DECISION" = "COOLDOWN" ] && exit 0
+
+ID="$(backup_id)"
+TS="$(utc_ts)"
+BACKUP_BRANCH="backup/$ID"
+
+# Base repo exists (meta only)
+ensure_repo "$BASE_REPO"
+BASE_URL="https://${TOKEN}@github.com/${OWNER}/${BASE_REPO}.git"
+
+# Determine current volume repo from base pointer; fallback to default volume repo
+tmp_ptr="$WORK/_tmp_ptr"
+ptr="$(read_pointer_from_base "$BASE_URL" "$tmp_ptr" 2>/dev/null || true)"
+rm -rf "$tmp_ptr" 2>/dev/null || true
+
+CURRENT_VOL="$(printf "%s" "$ptr" | awk '{print $1}')"
+if [ -z "$CURRENT_VOL" ]; then
+  CURRENT_VOL="$(default_volume_repo)"
+fi
+
+# Ensure volume exists
+ensure_repo "$CURRENT_VOL"
+
+# Rotate if volume near full
+size_mb="$(get_repo_size_mb "$CURRENT_VOL" || echo 0)"
+threshold=$((MAX_REPO_SIZE_MB - REPO_SIZE_MARGIN_MB))
+if [ "$size_mb" -ge "$threshold" ]; then
+  CURRENT_VOL="$(find_or_create_next_volume)" || exit 1
+  [ "$CURRENT_VOL" != "ERROR" ] || exit 1
+fi
+
+VOL_URL="https://${TOKEN}@github.com/${OWNER}/${CURRENT_VOL}.git"
+
+# Create orphan branch content (append-only, no overwrites)
+tmp_b="$WORK/_tmp_backup_branch"
+rm -rf "$tmp_b"
+mkdir -p "$tmp_b"
+
+(
+  cd "$tmp_b"
+  git init -q
+  git_ident
+  git remote add origin "$VOL_URL"
+
+  git checkout -q --orphan "$BACKUP_BRANCH"
+  rm -rf ./* ./.??* 2>/dev/null || true
+  mkdir -p n8n-data
+
+  # Important: checkpoint WAL so dump includes latest changes (best effort)
+  sqlite3 "$N8N_DIR/database.sqlite" ".timeout 10000" "PRAGMA wal_checkpoint(TRUNCATE);" >/dev/null 2>&1 || true
+
+  # 1) DB dump -> gzip -> split (streaming)
+  : > n8n-data/db_dump.stderr
+  sqlite3 "$N8N_DIR/database.sqlite" ".timeout 10000" ".dump" 2>n8n-data/db_dump.stderr \
+    | gzip -"$GZIP_LEVEL" -c \
+    | split -b "$CHUNK_SIZE" - "n8n-data/db.sql.gz.part_"
+
+  ls n8n-data/db.sql.gz.part_* >/dev/null 2>&1 || { echo "DB dump failed"; exit 1; }
+
+  # 2) Files (~/.n8n excluding sqlite*) -> tar -> gzip -> split (streaming)
+  : > n8n-data/files_archive.stderr
+  TAR_EXCLUDES="--exclude=database.sqlite --exclude=database.sqlite-wal --exclude=database.sqlite-shm"
+  if [ "$BACKUP_BINARYDATA" != "true" ]; then
+    TAR_EXCLUDES="$TAR_EXCLUDES --exclude=binaryData"
+  fi
+
+  # shellcheck disable=SC2086
+  tar -C "$N8N_DIR" -cf - $TAR_EXCLUDES . 2>n8n-data/files_archive.stderr \
+    | gzip -"$GZIP_LEVEL" -c \
+    | split -b "$CHUNK_SIZE" - "n8n-data/files.tar.gz.part_"
+
+  ls n8n-data/files.tar.gz.part_* >/dev/null 2>&1 || { echo "Files archive failed"; exit 1; }
+
+  # 3) Backup info
+  cat > n8n-data/backup_info.txt <<EOF
+ID=$ID
+TIMESTAMP_UTC=$TS
+VOLUME_REPO=$CURRENT_VOL
+BRANCH=$BACKUP_BRANCH
+CHUNK_SIZE=$CHUNK_SIZE
+GZIP_LEVEL=$GZIP_LEVEL
+BACKUP_BINARYDATA=$BACKUP_BINARYDATA
+EOF
+
+  git add -A
+  git commit -q -m "n8n backup $ID"
+  git push -q -u origin "$BACKUP_BRANCH"
+)
+
+rm -rf "$tmp_b" 2>/dev/null || true
+
+# Update meta in volume main (pointer)
+tmp_vm="$WORK/_tmp_volume_main"
+git_prepare_main "$tmp_vm" "$VOL_URL"
+write_meta_and_history "$tmp_vm" "$CURRENT_VOL" "$BACKUP_BRANCH" "$ID" "$TS"
+(
+  cd "$tmp_vm"
+  git add -A
+  git commit -q -m "meta: latest -> $BACKUP_BRANCH" || true
+  git push -q origin "$GITHUB_BRANCH" || true
+)
+rm -rf "$tmp_vm" 2>/dev/null || true
+
+# Update meta in base main (global pointer)
+tmp_bm="$WORK/_tmp_base_main"
+git_prepare_main "$tmp_bm" "$BASE_URL"
+write_meta_and_history "$tmp_bm" "$CURRENT_VOL" "$BACKUP_BRANCH" "$ID" "$TS"
+(
+  cd "$tmp_bm"
+  git add -A
+  git commit -q -m "meta: latest -> $CURRENT_VOL/$BACKUP_BRANCH" || true
+  git push -q origin "$GITHUB_BRANCH" || true
+)
+rm -rf "$tmp_bm" 2>/dev/null || true
+
+update_state "$ID" "$TS" "$CURRENT_VOL" "$BACKUP_BRANCH"
+exit 0
