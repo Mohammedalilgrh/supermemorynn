@@ -13,8 +13,23 @@ services:
         sync: false
       - key: GITHUB_BRANCH
         value: main
+
+      # Backup every N seconds
       - key: BACKUP_INTERVAL
-        value: "120"
+        value: "300"
+
+      # IMPORTANT: you said you do NOT want to store videos/big files in n8n backups
+      - key: BACKUP_BINARYDATA
+        value: "false"
+
+      # Keep database small over time (very important)
+      - key: EXECUTIONS_DATA_PRUNE
+        value: "true"
+      - key: EXECUTIONS_DATA_MAX_AGE
+        value: "168"
+      - key: EXECUTIONS_DATA_SAVE_ON_SUCCESS
+        value: "none"
+
       - key: N8N_PORT
         value: "5678"
       - key: PORT
@@ -25,14 +40,17 @@ services:
         sync: false
       - key: WEBHOOK_URL
         sync: false
+
       - key: N8N_ENCRYPTION_KEY
         sync: false
+
       - key: N8N_BASIC_AUTH_ACTIVE
         value: "true"
       - key: N8N_BASIC_AUTH_USER
         sync: false
       - key: N8N_BASIC_AUTH_PASSWORD
         sync: false
+
       - key: GENERIC_TIMEZONE
         value: "Asia/Baghdad"
       - key: N8N_DIAGNOSTICS_ENABLED
