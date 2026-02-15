@@ -1,20 +1,9 @@
-FROM docker.n8n.io/n8nio/n8n:2.3.6
+# ============================================
+# Stage 1: Alpine كامل - نبني كل الأدوات
+# ============================================
+FROM alpine:3.20 AS tools
 
-USER root
-
-# Install required tools for backup/restore scripts (auto-detect apk vs apt-get)
-RUN set -eux; \
-  if command -v apk >/dev/null 2>&1; then \
-    echo "Using apk"; \
-    # Ensure repositories exist and avoid TLS issues by using http (Render sometimes has TLS hiccups during build)
-    ALPINE_VER="$(cut -d. -f1,2 /etc/alpine-release 2>/dev/null || true)"; \
-    if [ ! -s /etc/apk/repositories ] && [ -n "$ALPINE_VER" ]; then \
-      printf "http://dl-cdn.alpinelinux.org/alpine/v%s/main\nhttp://dl-cdn.alpinelinux.org/alpine/v%s/community\n" "$ALPINE_VER" "$ALPINE_VER" > /etc/apk/repositories; \
-    fi; \
-    sed -i 's|https://|http://|g' /etc/apk/repositories 2>/dev/null || true; \
-    for i in 1 2 3; do apk update && break || sleep 2; done; \
-    apk add --no-cache \
-      ca-certificates \
+RUN apk add --no-cache \
       git \
       curl \
       jq \
@@ -22,33 +11,59 @@ RUN set -eux; \
       tar \
       gzip \
       coreutils \
-      findutils; \
-    update-ca-certificates || true; \
-  elif command -v apt-get >/dev/null 2>&1; then \
-    echo "Using apt-get"; \
-    apt-get update; \
-    apt-get install -y --no-install-recommends \
-      ca-certificates \
-      git \
-      curl \
-      jq \
-      sqlite3 \
-      tar \
-      gzip \
-      coreutils \
-      findutils; \
-    rm -rf /var/lib/apt/lists/*; \
-  else \
-    echo "ERROR: No supported package manager found (apk/apt-get)" >&2; \
-    exit 1; \
-  fi
+      findutils \
+      bash \
+      openssh-client \
+      ca-certificates
 
+# ============================================
+# Stage 2: n8n + الأدوات
+# ============================================
+FROM docker.n8n.io/n8nio/n8n:2.3.6
+
+USER root
+
+# نسخ كل الأدوات والمكتبات من Alpine
+COPY --from=tools /usr/bin/           /usr/bin/
+COPY --from=tools /usr/lib/           /usr/lib/
+COPY --from=tools /usr/libexec/       /usr/libexec/
+COPY --from=tools /usr/share/git-core/ /usr/share/git-core/
+COPY --from=tools /bin/tar            /bin/tar
+COPY --from=tools /usr/bin/gzip       /usr/bin/gzip
+COPY --from=tools /etc/ssl/           /etc/ssl/
+COPY --from=tools /usr/share/ca-certificates/ /usr/share/ca-certificates/
+
+# تحقق إن كل أداة شغالة
+RUN set -e && \
+    echo "=== Verifying tools ===" && \
+    git --version && \
+    curl --version | head -1 && \
+    jq --version && \
+    sqlite3 --version && \
+    tar --version | head -1 && \
+    gzip --version | head -1 && \
+    split --version | head -1 && \
+    sha256sum --version | head -1 && \
+    stat --version | head -1 && \
+    du --version | head -1 && \
+    sort --version | head -1 && \
+    tail --version | head -1 && \
+    tac --version | head -1 && \
+    awk --version | head -1 && \
+    xargs --version | head -1 && \
+    find --version | head -1 && \
+    cut --version | head -1 && \
+    tr --version | head -1 && \
+    echo "=== ALL TOOLS OK ==="
+
+# إعداد المجلدات
 RUN mkdir -p /scripts /backup-data /home/node/.n8n && \
     chown -R node:node /home/node/.n8n /scripts /backup-data
 
-# Copy scripts as node owner (avoids extra chmod/chown issues)
+# نسخ السكربتات
 COPY --chown=node:node scripts/ /scripts/
 
+# إصلاح line endings + صلاحيات
 RUN sed -i 's/\r$//' /scripts/*.sh && \
     chmod 0755 /scripts/*.sh
 
