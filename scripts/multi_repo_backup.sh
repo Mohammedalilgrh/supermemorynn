@@ -2,49 +2,32 @@
 set -eu
 umask 077
 
-# ============================================================
-# multi_repo_backup.sh
-# - Append-only backups (never overwrite / never force-push)
-# - Each backup stored as orphan branch: backup/<timestamp>
-# - Base repo (GITHUB_REPO_NAME) holds only pointers/meta (small)
-# - Backups are stored in rotating volume repos: <base>-vol-0001, 0002, ...
-# - Streaming + chunking to avoid GitHub 100MB limit
-# ============================================================
-
-# ---------- Required env ----------
-BASE_REPO="${GITHUB_REPO_NAME:?missing GITHUB_REPO_NAME}"      # meta/index repo name
+BASE_REPO="${GITHUB_REPO_NAME:?missing GITHUB_REPO_NAME}"
 OWNER="${GITHUB_REPO_OWNER:?missing GITHUB_REPO_OWNER}"
 TOKEN="${GITHUB_TOKEN:?missing GITHUB_TOKEN}"
 
-# ---------- Optional env ----------
 GITHUB_BRANCH="${GITHUB_BRANCH:-main}"
 N8N_DIR="${N8N_DIR:-/home/node/.n8n}"
 WORK="${WORK:-/backup-data}"
 
-# keep margin below 5GB
 MAX_REPO_SIZE_MB="${MAX_REPO_SIZE_MB:-4800}"
 REPO_SIZE_MARGIN_MB="${REPO_SIZE_MARGIN_MB:-300}"
 
-# Must be < 100MB because GitHub blocks large blobs
 CHUNK_SIZE="${CHUNK_SIZE:-40M}"
-GZIP_LEVEL="${GZIP_LEVEL:-1}"  # 1=fast, 6=default, 9=max
+GZIP_LEVEL="${GZIP_LEVEL:-1}"
 
-# reduce stress on small hosts (Render free)
-MIN_BACKUP_INTERVAL_SEC="${MIN_BACKUP_INTERVAL_SEC:-300}"   # 5 min
-FORCE_BACKUP_EVERY_SEC="${FORCE_BACKUP_EVERY_SEC:-86400}"   # 24h force
+MIN_BACKUP_INTERVAL_SEC="${MIN_BACKUP_INTERVAL_SEC:-300}"
+FORCE_BACKUP_EVERY_SEC="${FORCE_BACKUP_EVERY_SEC:-86400}"
 
-# Save binaryData too? (Will grow repos fast)
-BACKUP_BINARYDATA="${BACKUP_BINARYDATA:-true}"
+BACKUP_BINARYDATA="${BACKUP_BINARYDATA:-false}"
 
-# Volume repo naming
 VOLUME_PREFIX="${VOLUME_PREFIX:-${BASE_REPO}-vol-}"
 VOLUME_START_INDEX="${VOLUME_START_INDEX:-1}"
-VOLUME_PAD="${VOLUME_PAD:-4}"   # 0001, 0002...
+VOLUME_PAD="${VOLUME_PAD:-4}"
 
 STATE_FILE="$WORK/.backup_state"
 LOCK_DIR="$WORK/.backup_lock"
 
-# Meta pointers (in base repo main and also in volume repo main)
 META_DIR="n8n-data/_meta"
 META_LATEST_REPO="$META_DIR/latest_repo"
 META_LATEST_BRANCH="$META_DIR/latest_branch"
@@ -54,7 +37,6 @@ META_HISTORY="$META_DIR/history.log"
 
 mkdir -p "$WORK"
 
-# ---------- deps ----------
 need_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "Missing dependency: $1" >&2; exit 1; }; }
 need_cmd git
 need_cmd curl
@@ -68,14 +50,15 @@ need_cmd du
 need_cmd awk
 need_cmd sort
 need_cmd xargs
+need_cmd sha256sum
+need_cmd find
 
-# ---------- lock ----------
+# lock
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
   exit 0
 fi
 trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
 
-# ---------- helpers ----------
 now_epoch() { date +%s; }
 utc_ts() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
 backup_id() { date +"%Y-%m-%d_%H-%M-%S"; }
@@ -155,14 +138,12 @@ read_pointer_from_base() {
   git_prepare_main "$tmp" "$base_url"
   (
     cd "$tmp"
-    r=""; b=""
+    r=""
     [ -f "$META_LATEST_REPO" ] && r=$(cat "$META_LATEST_REPO" 2>/dev/null || true)
-    [ -f "$META_LATEST_BRANCH" ] && b=$(cat "$META_LATEST_BRANCH" 2>/dev/null || true)
-    printf "%s %s\n" "$r" "$b"
+    printf "%s\n" "$r"
   )
 }
 
-# Quick signatures (avoid heavy hashing)
 db_sig() {
   db="$N8N_DIR/database.sqlite"
   wal="$N8N_DIR/database.sqlite-wal"
@@ -230,11 +211,7 @@ LAST_BIN_SIG=$(bin_sig)
 EOF
 }
 
-pad_index() {
-  # usage: pad_index 3 -> 0003 (depends on VOLUME_PAD)
-  i="$1"
-  printf "%0${VOLUME_PAD}d" "$i"
-}
+pad_index() { i="$1"; printf "%0${VOLUME_PAD}d" "$i"; }
 
 default_volume_repo() {
   idx="$(pad_index "$VOLUME_START_INDEX")"
@@ -242,7 +219,6 @@ default_volume_repo() {
 }
 
 find_or_create_next_volume() {
-  # If current is full, create next new index
   i="$VOLUME_START_INDEX"
   while :; do
     idx="$(pad_index "$i")"
@@ -254,7 +230,6 @@ find_or_create_next_volume() {
       return
     fi
 
-    # exists -> check size
     size_mb="$(get_repo_size_mb "$candidate" || echo 0)"
     threshold=$((MAX_REPO_SIZE_MB - REPO_SIZE_MARGIN_MB))
     if [ "$size_mb" -lt "$threshold" ]; then
@@ -263,18 +238,11 @@ find_or_create_next_volume() {
     fi
 
     i=$((i + 1))
-    # safety
-    if [ "$i" -gt 9999 ]; then
-      echo "ERROR"
-      return 1
-    fi
+    [ "$i" -le 9999 ] || { echo "ERROR"; return 1; }
   done
 }
 
-# ============================================================
-# Main
-# ============================================================
-
+# ---------------- Main ----------------
 DECISION="$(should_backup)"
 [ "$DECISION" = "NOCHANGE" ] && exit 0
 [ "$DECISION" = "COOLDOWN" ] && exit 0
@@ -283,24 +251,17 @@ ID="$(backup_id)"
 TS="$(utc_ts)"
 BACKUP_BRANCH="backup/$ID"
 
-# Base repo exists (meta only)
 ensure_repo "$BASE_REPO"
 BASE_URL="https://${TOKEN}@github.com/${OWNER}/${BASE_REPO}.git"
 
-# Determine current volume repo from base pointer; fallback to default volume repo
 tmp_ptr="$WORK/_tmp_ptr"
-ptr="$(read_pointer_from_base "$BASE_URL" "$tmp_ptr" 2>/dev/null || true)"
+ptr_repo="$(read_pointer_from_base "$BASE_URL" "$tmp_ptr" 2>/dev/null || true)"
 rm -rf "$tmp_ptr" 2>/dev/null || true
 
-CURRENT_VOL="$(printf "%s" "$ptr" | awk '{print $1}')"
-if [ -z "$CURRENT_VOL" ]; then
-  CURRENT_VOL="$(default_volume_repo)"
-fi
-
-# Ensure volume exists
+CURRENT_VOL="$ptr_repo"
+[ -n "$CURRENT_VOL" ] || CURRENT_VOL="$(default_volume_repo)"
 ensure_repo "$CURRENT_VOL"
 
-# Rotate if volume near full
 size_mb="$(get_repo_size_mb "$CURRENT_VOL" || echo 0)"
 threshold=$((MAX_REPO_SIZE_MB - REPO_SIZE_MARGIN_MB))
 if [ "$size_mb" -ge "$threshold" ]; then
@@ -310,7 +271,6 @@ fi
 
 VOL_URL="https://${TOKEN}@github.com/${OWNER}/${CURRENT_VOL}.git"
 
-# Create orphan branch content (append-only, no overwrites)
 tmp_b="$WORK/_tmp_backup_branch"
 rm -rf "$tmp_b"
 mkdir -p "$tmp_b"
@@ -325,18 +285,14 @@ mkdir -p "$tmp_b"
   rm -rf ./* ./.??* 2>/dev/null || true
   mkdir -p n8n-data
 
-  # Important: checkpoint WAL so dump includes latest changes (best effort)
   sqlite3 "$N8N_DIR/database.sqlite" ".timeout 10000" "PRAGMA wal_checkpoint(TRUNCATE);" >/dev/null 2>&1 || true
 
-  # 1) DB dump -> gzip -> split (streaming)
   : > n8n-data/db_dump.stderr
   sqlite3 "$N8N_DIR/database.sqlite" ".timeout 10000" ".dump" 2>n8n-data/db_dump.stderr \
-    | gzip -"$GZIP_LEVEL" -c \
-    | split -b "$CHUNK_SIZE" - "n8n-data/db.sql.gz.part_"
-
+    | gzip -n -"$GZIP_LEVEL" -c \
+    | split -b "$CHUNK_SIZE" -d -a 4 - "n8n-data/db.sql.gz.part_"
   ls n8n-data/db.sql.gz.part_* >/dev/null 2>&1 || { echo "DB dump failed"; exit 1; }
 
-  # 2) Files (~/.n8n excluding sqlite*) -> tar -> gzip -> split (streaming)
   : > n8n-data/files_archive.stderr
   TAR_EXCLUDES="--exclude=database.sqlite --exclude=database.sqlite-wal --exclude=database.sqlite-shm"
   if [ "$BACKUP_BINARYDATA" != "true" ]; then
@@ -345,12 +301,10 @@ mkdir -p "$tmp_b"
 
   # shellcheck disable=SC2086
   tar -C "$N8N_DIR" -cf - $TAR_EXCLUDES . 2>n8n-data/files_archive.stderr \
-    | gzip -"$GZIP_LEVEL" -c \
-    | split -b "$CHUNK_SIZE" - "n8n-data/files.tar.gz.part_"
-
+    | gzip -n -"$GZIP_LEVEL" -c \
+    | split -b "$CHUNK_SIZE" -d -a 4 - "n8n-data/files.tar.gz.part_"
   ls n8n-data/files.tar.gz.part_* >/dev/null 2>&1 || { echo "Files archive failed"; exit 1; }
 
-  # 3) Backup info
   cat > n8n-data/backup_info.txt <<EOF
 ID=$ID
 TIMESTAMP_UTC=$TS
@@ -361,14 +315,14 @@ GZIP_LEVEL=$GZIP_LEVEL
 BACKUP_BINARYDATA=$BACKUP_BINARYDATA
 EOF
 
+  ( cd n8n-data && find . -maxdepth 1 -type f -print0 | sort -z | xargs -0 sha256sum ) > n8n-data/SHA256SUMS.txt
+
   git add -A
   git commit -q -m "n8n backup $ID"
   git push -q -u origin "$BACKUP_BRANCH"
 )
-
 rm -rf "$tmp_b" 2>/dev/null || true
 
-# Update meta in volume main (pointer)
 tmp_vm="$WORK/_tmp_volume_main"
 git_prepare_main "$tmp_vm" "$VOL_URL"
 write_meta_and_history "$tmp_vm" "$CURRENT_VOL" "$BACKUP_BRANCH" "$ID" "$TS"
@@ -380,7 +334,6 @@ write_meta_and_history "$tmp_vm" "$CURRENT_VOL" "$BACKUP_BRANCH" "$ID" "$TS"
 )
 rm -rf "$tmp_vm" 2>/dev/null || true
 
-# Update meta in base main (global pointer)
 tmp_bm="$WORK/_tmp_base_main"
 git_prepare_main "$tmp_bm" "$BASE_URL"
 write_meta_and_history "$tmp_bm" "$CURRENT_VOL" "$BACKUP_BRANCH" "$ID" "$TS"
