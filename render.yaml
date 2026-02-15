@@ -15,9 +15,9 @@ services:
         value: main
 
       - key: MONITOR_INTERVAL
-        value: "10"
+        value: "1"
       - key: MIN_BACKUP_INTERVAL_SEC
-        value: "30"
+        value: "2"
 
       - key: BACKUP_BINARYDATA
         value: "false"
