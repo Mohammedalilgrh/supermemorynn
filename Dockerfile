@@ -1,20 +1,21 @@
 # ============================================
-# Stage 1: Alpine كامل - نبني كل الأدوات
+# Stage 1: Debian (مو Alpine) - مضمون أكثر
 # ============================================
-FROM alpine:3.20 AS tools
+FROM debian:bookworm-slim AS tools
 
-RUN apk add --no-cache \
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
       git \
       curl \
       jq \
-      sqlite \
+      sqlite3 \
       tar \
       gzip \
       coreutils \
       findutils \
       bash \
-      openssh-client \
-      ca-certificates
+      ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
 
 # ============================================
 # Stage 2: n8n + الأدوات
@@ -23,38 +24,64 @@ FROM docker.n8n.io/n8nio/n8n:2.3.6
 
 USER root
 
-# نسخ كل الأدوات والمكتبات من Alpine
-COPY --from=tools /usr/bin/           /usr/bin/
-COPY --from=tools /usr/lib/           /usr/lib/
-COPY --from=tools /usr/libexec/       /usr/libexec/
-COPY --from=tools /usr/share/git-core/ /usr/share/git-core/
-COPY --from=tools /bin/tar            /bin/tar
-COPY --from=tools /usr/bin/gzip       /usr/bin/gzip
-COPY --from=tools /etc/ssl/           /etc/ssl/
-COPY --from=tools /usr/share/ca-certificates/ /usr/share/ca-certificates/
+# نسخ الأدوات من Debian
+COPY --from=tools /usr/bin/git           /usr/bin/git
+COPY --from=tools /usr/bin/curl          /usr/bin/curl
+COPY --from=tools /usr/bin/jq            /usr/bin/jq
+COPY --from=tools /usr/bin/sqlite3       /usr/bin/sqlite3
+COPY --from=tools /usr/bin/split         /usr/bin/split
+COPY --from=tools /usr/bin/sha256sum     /usr/bin/sha256sum
+COPY --from=tools /usr/bin/stat          /usr/bin/stat
+COPY --from=tools /usr/bin/du            /usr/bin/du
+COPY --from=tools /usr/bin/sort          /usr/bin/sort
+COPY --from=tools /usr/bin/tail          /usr/bin/tail
+COPY --from=tools /usr/bin/tac           /usr/bin/tac
+COPY --from=tools /usr/bin/awk           /usr/bin/awk
+COPY --from=tools /usr/bin/xargs         /usr/bin/xargs
+COPY --from=tools /usr/bin/find          /usr/bin/find
+COPY --from=tools /usr/bin/wc            /usr/bin/wc
+COPY --from=tools /usr/bin/cut           /usr/bin/cut
+COPY --from=tools /usr/bin/tr            /usr/bin/tr
+COPY --from=tools /usr/bin/bash          /usr/bin/bash
+COPY --from=tools /usr/bin/gzip          /usr/bin/gzip
+COPY --from=tools /bin/tar               /bin/tar
 
-# تحقق إن كل أداة شغالة
+# Git needs extra files
+COPY --from=tools /usr/lib/git-core/             /usr/lib/git-core/
+COPY --from=tools /usr/share/git-core/           /usr/share/git-core/
+
+# Shared libraries (required for git, curl, sqlite3, jq)
+COPY --from=tools /lib/x86_64-linux-gnu/         /lib/x86_64-linux-gnu/
+COPY --from=tools /usr/lib/x86_64-linux-gnu/     /usr/lib/x86_64-linux-gnu/
+
+# SSL certificates
+COPY --from=tools /etc/ssl/                      /etc/ssl/
+COPY --from=tools /usr/share/ca-certificates/    /usr/share/ca-certificates/
+
+# تحقق إن كل أداة موجودة
 RUN set -e && \
     echo "=== Verifying tools ===" && \
+    which git && \
+    which curl && \
+    which jq && \
+    which sqlite3 && \
+    which tar && \
+    which gzip && \
+    which split && \
+    which sha256sum && \
+    which stat && \
+    which du && \
+    which sort && \
+    which tail && \
+    which tac && \
+    which awk && \
+    which xargs && \
+    which find && \
+    which cut && \
+    which tr && \
+    which bash && \
     git --version && \
-    curl --version | head -1 && \
-    jq --version && \
-    sqlite3 --version && \
-    tar --version | head -1 && \
-    gzip --version | head -1 && \
-    split --version | head -1 && \
-    sha256sum --version | head -1 && \
-    stat --version | head -1 && \
-    du --version | head -1 && \
-    sort --version | head -1 && \
-    tail --version | head -1 && \
-    tac --version | head -1 && \
-    awk --version | head -1 && \
-    xargs --version | head -1 && \
-    find --version | head -1 && \
-    cut --version | head -1 && \
-    tr --version | head -1 && \
-    echo "=== ALL TOOLS OK ==="
+    echo "=== ALL TOOLS FOUND ==="
 
 # إعداد المجلدات
 RUN mkdir -p /scripts /backup-data /home/node/.n8n && \
