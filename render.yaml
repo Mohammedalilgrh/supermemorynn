@@ -14,15 +14,19 @@ services:
       - key: GITHUB_BRANCH
         value: main
 
-      # Backup every N seconds
-      - key: BACKUP_INTERVAL
+      # Backup interval (seconds) - how often the loop runs
+      - key: MONITOR_INTERVAL
+        value: "120"
+
+      # Minimum seconds between actual backups (cooldown)
+      - key: MIN_BACKUP_INTERVAL_SEC
         value: "300"
 
-      # IMPORTANT: you said you do NOT want to store videos/big files in n8n backups
+      # Don't backup binary files (videos etc)
       - key: BACKUP_BINARYDATA
         value: "false"
 
-      # Keep database small over time (very important)
+      # Keep database small
       - key: EXECUTIONS_DATA_PRUNE
         value: "true"
       - key: EXECUTIONS_DATA_MAX_AGE
