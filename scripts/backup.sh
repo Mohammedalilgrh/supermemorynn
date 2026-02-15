@@ -1,106 +1,66 @@
 #!/bin/sh
 
-GITHUB_BRANCH="${GITHUB_BRANCH:-main}"
+# --- الإعدادات العبقرية ---
+MAX_REPO_SIZE_MB=4000 # 4GB كحد أقصى للريبو الواحد لضمان الأمان
+CHUNK_SIZE="40M"      # تقسيم الداتابيس لقطع 40 ميجا لسهولة التدفق (Streaming)
 N8N_DIR="/home/node/.n8n"
 WORK="/backup-data"
-REPO_DIR="$WORK/repo"
-REPO_URL="https://${GITHUB_TOKEN}@github.com/${GITHUB_REPO_OWNER}/${GITHUB_REPO_NAME}.git"
-TIMESTAMP=$(date +"%Y-%m-%d %H:%M:%S")
-DATA_DIR="$REPO_DIR/n8n-data"
+TIMESTAMP=$(date +"%Y-%m-%d_%H:%M:%S")
 
-echo "Backup: $TIMESTAMP"
-
-if [ ! -d "$REPO_DIR/.git" ]; then
-    cd "$WORK"
-    rm -rf repo
-    if ! git clone --branch "$GITHUB_BRANCH" --depth 1 "$REPO_URL" repo 2>/dev/null; then
-        mkdir -p repo
-        cd repo
-        git init
-        git checkout -b "$GITHUB_BRANCH"
-        git remote add origin "$REPO_URL"
-        cd "$WORK"
-    fi
-fi
-
-cd "$REPO_DIR"
-git pull origin "$GITHUB_BRANCH" 2>/dev/null || true
-
-rm -rf "$DATA_DIR"
-mkdir -p "$DATA_DIR"
-
-cp -r "$N8N_DIR"/* "$DATA_DIR/" 2>/dev/null || true
-cp "$N8N_DIR"/.* "$DATA_DIR/" 2>/dev/null || true
-
-echo "   OK: all n8n data copied"
-
-if [ -f "$DATA_DIR/database.sqlite" ]; then
-    DB_SIZE=$(du -sh "$DATA_DIR/database.sqlite" 2>/dev/null | cut -f1)
-    echo "   OK: database ($DB_SIZE)"
-
-    DB_BYTES=$(wc -c < "$DATA_DIR/database.sqlite" 2>/dev/null || echo "0")
-    if [ "$DB_BYTES" -gt 83886080 ]; then
-        gzip -c "$DATA_DIR/database.sqlite" > "$DATA_DIR/database.sqlite.gz"
-        rm -f "$DATA_DIR/database.sqlite"
-        echo "   OK: compressed"
-    fi
-fi
-
-if [ ! -z "$N8N_ENCRYPTION_KEY" ]; then
-    echo "$N8N_ENCRYPTION_KEY" > "$DATA_DIR/env_encryption_key.txt"
-    echo "   OK: encryption key saved"
-fi
-
-N8N_PORT="${N8N_PORT:-5678}"
-if curl -s "http://localhost:$N8N_PORT/healthz" > /dev/null 2>&1; then
-    mkdir -p "$DATA_DIR/exported-workflows"
-
-    WORKFLOWS=$(curl -s "http://localhost:$N8N_PORT/api/v1/workflows" 2>/dev/null)
-    if [ ! -z "$WORKFLOWS" ] && [ "$WORKFLOWS" != "null" ] && [ "$WORKFLOWS" != "" ]; then
-        echo "$WORKFLOWS" > "$DATA_DIR/exported-workflows/all.json"
-        WF_COUNT=$(echo "$WORKFLOWS" | jq '.data | length' 2>/dev/null || echo "?")
-        echo "   OK: $WF_COUNT workflows exported"
-    fi
-
-    CREDS=$(curl -s "http://localhost:$N8N_PORT/api/v1/credentials" 2>/dev/null)
-    if [ ! -z "$CREDS" ] && [ "$CREDS" != "null" ] && [ "$CREDS" != "" ]; then
-        echo "$CREDS" > "$DATA_DIR/exported-workflows/credentials.json"
-        echo "   OK: credentials exported"
-    fi
-fi
-
-TOTAL_SIZE=$(du -sh "$DATA_DIR" 2>/dev/null | cut -f1)
-FILE_COUNT=$(find "$DATA_DIR" -type f | wc -l)
-
-cat > "$DATA_DIR/stats.json" << EOF
-{
-    "last_backup": "$TIMESTAMP",
-    "size": "$TOTAL_SIZE",
-    "files": $FILE_COUNT
+# دالة لجلب حجم الريبو الحالي من GitHub API
+get_repo_size() {
+    curl -s -H "Authorization: token $GITHUB_TOKEN" \
+    "https://api.github.com/repos/${GITHUB_REPO_OWNER}/${1}" | jq '.size // 0' | awk '{printf "%.0f", $1/1024}'
 }
-EOF
 
-REPO_SIZE_MB=$(du -sm "$REPO_DIR/.git" 2>/dev/null | cut -f1)
-if [ "${REPO_SIZE_MB:-0}" -gt 3000 ]; then
-    git checkout --orphan temp_branch 2>/dev/null
-    git add -A
-    git commit -m "cleanup $TIMESTAMP" 2>/dev/null
-    git branch -D "$GITHUB_BRANCH" 2>/dev/null
-    git branch -m "$GITHUB_BRANCH" 2>/dev/null
-    git gc --aggressive --prune=all 2>/dev/null
+# دالة إنشاء ريبو جديد تلقائياً عند الامتلاء
+create_repo() {
+    curl -s -X POST -H "Authorization: token $GITHUB_TOKEN" \
+    -d "{\"name\":\"$1\",\"private\":true}" "https://api.github.com/user/repos"
+}
+
+# تحديد الريبو النشط
+CURRENT_REPO=$GITHUB_REPO_NAME
+REPO_SIZE=$(get_repo_size "$CURRENT_REPO")
+
+if [ "$REPO_SIZE" -gt "$MAX_REPO_SIZE_MB" ]; then
+    NEW_REPO="${GITHUB_REPO_NAME}-vol-$(date +%s)"
+    create_repo "$NEW_REPO"
+    CURRENT_REPO=$NEW_REPO
+    echo "🚨 الريبو ممتلئ! تم التحويل للريبو الجديد: $CURRENT_REPO"
 fi
 
+REPO_URL="https://${GITHUB_TOKEN}@github.com/${GITHUB_REPO_OWNER}/${CURRENT_REPO}.git"
+DATA_DIR="$WORK/repo/n8n-data"
+
+# تجهيز المستودع
+cd "$WORK"
+rm -rf repo
+git clone --depth 1 "$REPO_URL" repo 2>/dev/null || (mkdir repo && cd repo && git init && git remote add origin "$REPO_URL")
+cd "$WORK/repo"
+
+# 1️⃣ تقنية الـ SQLite Vacuuming (تنظيف الفراغات وضغط الحجم)
+if [ -f "$N8N_DIR/database.sqlite" ]; then
+    echo "🧹 VACUUM: تحسين وضغط الداتابيس..."
+    sqlite3 "$N8N_DIR/database.sqlite" "VACUUM;"
+fi
+
+# 2️⃣ تقنية الـ SQL Dump (نسخة نصية للأمان المطلق)
+mkdir -p "$DATA_DIR/chunks"
+sqlite3 "$N8N_DIR/database.sqlite" .dump > "$DATA_DIR/full_backup.sql"
+
+# 3️⃣ تقنية الـ Chunking (تجزئة الملف لسهولة الـ Streaming)
+split -b $CHUNK_SIZE "$N8N_DIR/database.sqlite" "$DATA_DIR/chunks/n8n_part_"
+
+# 4️⃣ نسخ المفاتيح والإعدادات
+cp "$N8N_DIR"/.n8n-encryption-key "$DATA_DIR/" 2>/dev/null || true
+cp "$N8N_DIR"/encryptionKey "$DATA_DIR/" 2>/dev/null || true
+cp "$N8N_DIR"/config "$DATA_DIR/" 2>/dev/null || true
+
+# 5️⃣ الرفع لـ GitHub
 git add -A
-if ! git diff --staged --quiet 2>/dev/null; then
-    git commit -m "backup $TIMESTAMP | $TOTAL_SIZE" 2>/dev/null
-    if git push origin "$GITHUB_BRANCH" 2>/dev/null; then
-        echo "   Pushed to GitHub"
-    else
-        git push -f origin "$GITHUB_BRANCH" 2>/dev/null
-        echo "   Force pushed"
-    fi
-else
-    echo "   No changes"
+if ! git diff --staged --quiet; then
+    git commit -m "💎 Master Backup - $TIMESTAMP"
+    git push origin main -f
+    echo "✅ تم الحفظ الشامل في $CURRENT_REPO"
 fi
-
-echo "Done: $TOTAL_SIZE, $FILE_COUNT files"
