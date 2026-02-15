@@ -100,22 +100,22 @@ git_prepare_main() {
   dir="$1"; url="$2"
   rm -rf "$dir"
   mkdir -p "$dir"
-  (
-    cd "$dir"
-    git init -q
-    git_setup
-    git remote add origin "$url"
-    if git fetch -q --depth 1 origin "$GITHUB_BRANCH" 2>/dev/null; then
-      git checkout -q -B "$GITHUB_BRANCH" FETCH_HEAD
-    else
-      git checkout -q --orphan "$GITHUB_BRANCH"
-      mkdir -p "$META_DIR"
-      echo "initialized $(date -u)" > "$META_DIR/initialized.txt"
-      git add -A
-      git commit -q -m "init meta"
-      git push -q -u origin "$GITHUB_BRANCH" || true
-    fi
-  )
+  cd "$dir" || exit 1
+
+  git init -q
+  git_setup
+  git remote add origin "$url"
+  if git fetch -q --depth 1 origin "$GITHUB_BRANCH" 2>/dev/null; then
+    git checkout -q -B "$GITHUB_BRANCH" FETCH_HEAD
+  else
+    git checkout -q --orphan "$GITHUB_BRANCH"
+    mkdir -p "$META_DIR"
+    echo "initialized $(date -u)" > "$META_DIR/initialized.txt"
+    git add -A
+    git commit -q -m "init meta"
+    git push -q -u origin "$GITHUB_BRANCH" || true
+  fi
+  cd - > /dev/null || true
 }
 
 write_meta_and_history() {
