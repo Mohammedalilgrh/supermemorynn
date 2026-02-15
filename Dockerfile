@@ -1,11 +1,11 @@
 FROM docker.n8n.io/n8nio/n8n:2.3.6
 
 USER root
-SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-# Tools required by backup/restore scripts
+# Install required tools (using default /bin/sh)
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
+      bash \
       ca-certificates \
       git \
       curl \
@@ -16,6 +16,9 @@ RUN apt-get update && \
       coreutils \
       findutils \
     && rm -rf /var/lib/apt/lists/*
+
+# Now bash exists, you can enable pipefail safely (optional)
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # Create folders with correct ownership
 RUN install -d -o node -g node /scripts /backup-data /home/node/.n8n
