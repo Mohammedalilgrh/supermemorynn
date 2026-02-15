@@ -14,6 +14,41 @@ echo "🛰️ بدء سحب البيانات بتقنية الـ Streaming..."
 git clone --depth 1 "$REPO_URL" repo 2>/dev/null || echo "أول تشغيل"
 
 if [ -d "repo/n8n-data" ]; then
+# --- إضافة شاملة لجميع أنواع الملفات ---
+echo "🧠 التحقق من ملفات n8n للنسخ الشامل..."
+
+# إنشاء مجلد احتياط تلقائي إذا لم يكن موجود
+mkdir -p "$N8N_DIR"
+
+# تحقق من وجود chunks
+CHUNK_FILES=$(ls repo/n8n-data/chunks/n8n_part_* 2>/dev/null || true)
+
+if [ -n "$CHUNK_FILES" ]; then
+    echo "🧩 تم العثور على ملفات مجزأة، يتم دمجها..."
+    cat repo/n8n-data/chunks/n8n_part_* > "$N8N_DIR/database.sqlite"
+else
+    # لو ما فيه chunks، تحقق من وجود database.sqlite كامل
+    if [ -f repo/n8n-data/database.sqlite ]; then
+        echo "💾 تم العثور على database.sqlite كامل، يتم نسخه مباشرة..."
+        cp repo/n8n-data/database.sqlite "$N8N_DIR/database.sqlite"
+    else
+        echo "⚠️ لا توجد ملفات قاعدة بيانات للنسخ!"
+    fi
+fi
+
+# نسخ جميع الملفات الهامة تلقائياً
+for f in .n8n-encryption-key encryptionKey config .env; do
+    if [ -f "repo/n8n-data/$f" ]; then
+        cp "repo/n8n-data/$f" "$N8N_DIR/"
+        echo "✅ تم نسخ $f"
+    fi
+done
+
+# إنشاء نسخة احتياط مع timestamp (اختياري إذا تريد الاحتفاظ بكل نسخة)
+if [ -f "$N8N_DIR/database.sqlite" ]; then
+    cp "$N8N_DIR/database.sqlite" "$N8N_DIR/database_backup_$(date +%s).sqlite"
+    echo "🕒 تم إنشاء نسخة احتياطية جديدة من قاعدة البيانات"
+fi
     echo "🧩 تجميع أجزاء الداتابيس (توفير الرام)..."
     
     # 🔥 تقنية الـ Streaming: تجميع القطع مباشرة إلى الملف دون تحميلها للذاكرة
