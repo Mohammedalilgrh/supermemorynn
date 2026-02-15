@@ -2,10 +2,22 @@ FROM docker.n8n.io/n8nio/n8n:2.3.6
 
 USER root
 
-# Install required tools (using default /bin/sh)
-RUN apt-get update && \
+# Install required tools for backup/restore scripts (auto-detect apk vs apt-get)
+RUN set -eux; \
+  if command -v apk >/dev/null 2>&1; then \
+    apk add --no-cache \
+      ca-certificates \
+      git \
+      curl \
+      jq \
+      sqlite \
+      tar \
+      gzip \
+      coreutils \
+      findutils; \
+  elif command -v apt-get >/dev/null 2>&1; then \
+    apt-get update && \
     apt-get install -y --no-install-recommends \
-      bash \
       ca-certificates \
       git \
       curl \
@@ -14,14 +26,16 @@ RUN apt-get update && \
       tar \
       gzip \
       coreutils \
-      findutils \
-    && rm -rf /var/lib/apt/lists/*
-
-# Now bash exists, you can enable pipefail safely (optional)
-SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+      findutils && \
+    rm -rf /var/lib/apt/lists/*; \
+  else \
+    echo "ERROR: No supported package manager found (apk/apt-get)." >&2; \
+    exit 1; \
+  fi
 
 # Create folders with correct ownership
-RUN install -d -o node -g node /scripts /backup-data /home/node/.n8n
+RUN mkdir -p /scripts /backup-data /home/node/.n8n && \
+    chown -R node:node /scripts /backup-data /home/node/.n8n
 
 # Copy scripts
 COPY --chown=node:node scripts/ /scripts/
