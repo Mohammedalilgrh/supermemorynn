@@ -1,5 +1,5 @@
 # ============================================
-# Stage 1: Alpine - نجهز الأدوات
+# Stage 1: Alpine - نجهز كل شي بمجلد واحد
 # ============================================
 FROM alpine:3.20 AS tools
 
@@ -12,7 +12,28 @@ RUN apk add --no-cache \
       gzip \
       coreutils \
       findutils \
-      ca-certificates
+      ca-certificates && \
+    mkdir -p /toolbox && \
+    cp $(which git)       /toolbox/ && \
+    cp $(which curl)      /toolbox/ && \
+    cp $(which jq)        /toolbox/ && \
+    cp $(which sqlite3)   /toolbox/ && \
+    cp $(which split)     /toolbox/ && \
+    cp $(which sha256sum) /toolbox/ && \
+    cp $(which stat)      /toolbox/ && \
+    cp $(which du)        /toolbox/ && \
+    cp $(which sort)      /toolbox/ && \
+    cp $(which tail)      /toolbox/ && \
+    cp $(which tac)       /toolbox/ && \
+    cp $(which awk)       /toolbox/ && \
+    cp $(which xargs)     /toolbox/ && \
+    cp $(which find)      /toolbox/ && \
+    cp $(which wc)        /toolbox/ && \
+    cp $(which cut)       /toolbox/ && \
+    cp $(which tr)        /toolbox/ && \
+    cp $(which gzip)      /toolbox/ && \
+    cp $(which tar)       /toolbox/ && \
+    ls -la /toolbox/
 
 # ============================================
 # Stage 2: n8n + الأدوات
@@ -21,35 +42,29 @@ FROM docker.n8n.io/n8nio/n8n:2.3.6
 
 USER root
 
-COPY --from=tools /usr/bin/git           /usr/local/bin/git
-COPY --from=tools /usr/bin/curl          /usr/local/bin/curl
-COPY --from=tools /usr/bin/jq            /usr/local/bin/jq
-COPY --from=tools /usr/bin/sqlite3       /usr/local/bin/sqlite3
-COPY --from=tools /usr/bin/split         /usr/local/bin/split
-COPY --from=tools /usr/bin/sha256sum     /usr/local/bin/sha256sum
-COPY --from=tools /usr/bin/stat          /usr/local/bin/stat
-COPY --from=tools /usr/bin/du            /usr/local/bin/du
-COPY --from=tools /usr/bin/sort          /usr/local/bin/sort
-COPY --from=tools /usr/bin/tail          /usr/local/bin/tail
-COPY --from=tools /usr/bin/tac           /usr/local/bin/tac
-COPY --from=tools /usr/bin/xargs         /usr/local/bin/xargs
-COPY --from=tools /usr/bin/find          /usr/local/bin/find
-COPY --from=tools /usr/bin/wc            /usr/local/bin/wc
-COPY --from=tools /usr/bin/cut           /usr/local/bin/cut
-COPY --from=tools /usr/bin/tr            /usr/local/bin/tr
+# ننسخ كل الأدوات من المجلد الجاهز
+COPY --from=tools /toolbox/              /usr/local/bin/
 
+# Git extra files
 COPY --from=tools /usr/libexec/git-core/ /usr/local/libexec/git-core/
 COPY --from=tools /usr/share/git-core/   /usr/share/git-core/
+
+# المكتبات
 COPY --from=tools /usr/lib/              /usr/local/lib/
+
+# SSL
 COPY --from=tools /etc/ssl/certs/        /etc/ssl/certs/
 
+# المسارات
 ENV LD_LIBRARY_PATH="/usr/local/lib:$LD_LIBRARY_PATH"
 ENV GIT_EXEC_PATH="/usr/local/libexec/git-core"
 ENV PATH="/usr/local/bin:$PATH"
 
+# المجلدات
 RUN mkdir -p /scripts /backup-data /home/node/.n8n && \
     chown -R node:node /home/node/.n8n /scripts /backup-data
 
+# السكربتات
 COPY --chown=node:node scripts/ /scripts/
 
 RUN sed -i 's/\r$//' /scripts/*.sh && \
