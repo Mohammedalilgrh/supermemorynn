@@ -22,22 +22,7 @@ if [ -d "repo/n8n-data" ]; then
         cat "repo/n8n-data/backup_info.txt"
         USE_CHUNKS=$(grep "USE_CHUNKS=" "repo/n8n-data/backup_info.txt" 2>/dev/null | cut -d'=' -f2)
     fi
-    # 🧠 نظام الذاكرة الخارق
-MEMORY_DIR="$WORK/memory"
-VERSIONS_DIR="$WORK/versions"
-RECOVERY_MODE="$WORK/.recovery_mode"
-mkdir -p "$MEMORY_DIR" "$VERSIONS_DIR"
-
-# 🔍 فحص هل نحتاج لاستعادة نسخة معينة
-if [ -f "$RECOVERY_MODE" ]; then
-    RECOVER_HASH=$(cat "$RECOVERY_MODE")
-    if [ -f "$VERSIONS_DIR/db_${RECOVER_HASH}.sqlite" ]; then
-        echo "🚨 وضع الاستعادة: استرجاع النسخة ${RECOVER_HASH}"
-        cp "$VERSIONS_DIR/db_${RECOVER_HASH}.sqlite" "$N8N_DIR/database.sqlite"
-        rm -f "$RECOVERY_MODE"
-        echo "✅ تم استرجاع النسخة بنجاح!"
-    fi
-fi
+    
     # 🎯 الاستعادة الذكية حسب نوع النسخة
     if [ "$USE_CHUNKS" = "true" ] || [ -d "repo/n8n-data/chunks" ] && [ ! -f "repo/n8n-data/database.sqlite" ]; then
         echo "🧩 تجميع أجزاء الداتابيس (توفير الرام)..."
