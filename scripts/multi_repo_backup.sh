@@ -91,9 +91,9 @@ get_repo_size_mb() {
   awk "BEGIN{printf \"%d\", ($size_kb/1024)}"
 }
 
-git_ident() {
-  git config --global user.email "backup@local" 2>/dev/null || true
-  git config --global user.name "n8n-backup-bot" 2>/dev/null || true
+git_setup() {
+  git config user.email "backup@local"
+  git config user.name "n8n-backup-bot"
 }
 
 git_prepare_main() {
@@ -103,7 +103,7 @@ git_prepare_main() {
   (
     cd "$dir"
     git init -q
-    git_ident
+    git_setup
     git remote add origin "$url"
     if git fetch -q --depth 1 origin "$GITHUB_BRANCH" 2>/dev/null; then
       git checkout -q -B "$GITHUB_BRANCH" FETCH_HEAD
@@ -239,10 +239,6 @@ find_or_create_next_volume() {
   done
 }
 
-# ============================================================
-# MAIN
-# ============================================================
-
 DECISION="$(should_backup)"
 [ "$DECISION" = "NOCHANGE" ] && exit 0
 [ "$DECISION" = "COOLDOWN" ] && exit 0
@@ -282,7 +278,7 @@ mkdir -p "$tmp_b"
 (
   cd "$tmp_b"
   git init -q
-  git_ident
+  git_setup
   git remote add origin "$VOL_URL"
 
   git checkout -q --orphan "$BACKUP_BRANCH"
@@ -305,7 +301,6 @@ mkdir -p "$tmp_b"
     TAR_EXCLUDES="$TAR_EXCLUDES --exclude=binaryData"
   fi
 
-  # shellcheck disable=SC2086
   tar -C "$N8N_DIR" -cf - $TAR_EXCLUDES . 2>n8n-data/files_archive.stderr \
     | gzip -n -"$GZIP_LEVEL" -c \
     | split -b "$CHUNK_SIZE" -d -a 4 - "n8n-data/files.tar.gz.part_"
