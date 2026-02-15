@@ -14,19 +14,14 @@ services:
       - key: GITHUB_BRANCH
         value: main
 
-      # Backup interval (seconds) - how often the loop runs
       - key: MONITOR_INTERVAL
         value: "10"
-
-      # Minimum seconds between actual backups (cooldown)
       - key: MIN_BACKUP_INTERVAL_SEC
         value: "30"
 
-      # Don't backup binary files (videos etc)
       - key: BACKUP_BINARYDATA
         value: "false"
 
-      # Keep database small
       - key: EXECUTIONS_DATA_PRUNE
         value: "true"
       - key: EXECUTIONS_DATA_MAX_AGE
