@@ -96,4 +96,13 @@ else
 fi
 
 echo "🚀 تشغيل n8n الآن..."
+echo "⏳ جدولة Forced Backup خلال دقيقة واحدة للتهيئة الأولية."
+
+(
+  sleep 60
+  echo "[force-backup] ⏱️ تنفيذ Forced Backup أولي..."
+  rm -f "$WORK/.backup_state"
+  /scripts/multi_repo_backup.sh
+) &
 exec n8n start
+
