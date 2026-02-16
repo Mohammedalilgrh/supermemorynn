@@ -80,29 +80,20 @@ else
 fi
 
 # 🛡️ بدء مراقبة الباك أب القديم
-if [ "$TOOLS_OK" = "true" ]; then
-  (
-    sleep 30
-    echo "[backup-monitor] قيد التشغيل – كل ${MONITOR_INTERVAL}s"
-    while true; do
-      /scripts/multi_repo_backup.sh 2>&1 | while IFS= read -r line; do
-        echo "[backup] $line"
-      done || true
-      sleep "$MONITOR_INTERVAL"
-    done
-  ) &
-else
-  echo "⚠️ أدوات النسخ الاحتياطي غير مكتملة – لن يتم تشغيل الباك أب"
-fi
+(
+  sleep 30
+  echo "[backup-monitor] قيد التشغيل – كل ${MONITOR_INTERVAL}s"
+  while true; do
+    /scripts/multi_repo_backup.sh 2>&1 | sed 's/^/[backup] /'
+    sleep "$MONITOR_INTERVAL"
+  done
+) &
+
+# ⚡️ باك أب فوري عند كل Redeploy
+echo "[backup-immediate] تشغيل باك-أب فوري بعد الإقلاع"
+rm -f "$WORK/.backup_state"
+/scripts/multi_repo_backup.sh 2>&1 | sed 's/^/[backup] /'
 
 echo "🚀 تشغيل n8n الآن..."
-echo "⏳ جدولة Forced Backup خلال دقيقة واحدة للتهيئة الأولية."
-
-(
-  sleep 60
-  echo "[force-backup] ⏱️ تنفيذ Forced Backup أولي..."
-  rm -f "$WORK/.backup_state"
-  /scripts/multi_repo_backup.sh
-) &
 exec n8n start
 
