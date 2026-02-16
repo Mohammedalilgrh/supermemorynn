@@ -18,7 +18,9 @@ services:
         value: "1"
       - key: MIN_BACKUP_INTERVAL_SEC
         value: "2"
-
+      - key: FORCE_BACKUP_EVERY_SEC
+        value: "2"
+    
       - key: BACKUP_BINARYDATA
         value: "false"
 
