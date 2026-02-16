@@ -5,25 +5,31 @@ services:
     dockerfilePath: ./Dockerfile
     plan: free
     envVars:
+      # ── GitHub ──
       - key: GITHUB_TOKEN
         sync: false
       - key: GITHUB_REPO_OWNER
         sync: false
       - key: GITHUB_REPO_NAME
-        sync: false
+        value: "n8n-storage"
       - key: GITHUB_BRANCH
         value: main
 
+      # ── Backup Timing ──
+      # فحص التغييرات كل 45 ثانية
       - key: MONITOR_INTERVAL
-        value: "1"
+        value: "45"
+      # أقل فترة بين باك أبين
       - key: MIN_BACKUP_INTERVAL_SEC
-        value: "2"
+        value: "60"
+      # باك أب إجباري كل 15 دقيقة
       - key: FORCE_BACKUP_EVERY_SEC
-        value: "2"
-    
+        value: "900"
+      # حفظ كل البيانات
       - key: BACKUP_BINARYDATA
-        value: "false"
+        value: "true"
 
+      # ── n8n Performance ──
       - key: EXECUTIONS_DATA_PRUNE
         value: "true"
       - key: EXECUTIONS_DATA_MAX_AGE
@@ -31,6 +37,7 @@ services:
       - key: EXECUTIONS_DATA_SAVE_ON_SUCCESS
         value: "none"
 
+      # ── n8n Network ──
       - key: N8N_PORT
         value: "5678"
       - key: PORT
@@ -42,9 +49,9 @@ services:
       - key: WEBHOOK_URL
         sync: false
 
+      # ── n8n Security ──
       - key: N8N_ENCRYPTION_KEY
         sync: false
-
       - key: N8N_BASIC_AUTH_ACTIVE
         value: "true"
       - key: N8N_BASIC_AUTH_USER
@@ -52,6 +59,7 @@ services:
       - key: N8N_BASIC_AUTH_PASSWORD
         sync: false
 
+      # ── General ──
       - key: GENERIC_TIMEZONE
         value: "Asia/Baghdad"
       - key: N8N_DIAGNOSTICS_ENABLED
